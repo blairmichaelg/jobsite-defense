@@ -1,0 +1,3 @@
+# Jobsite Defense — pinned dependencies
+# Engine: Pygame Community Edition
+pygame-ce==2.5.8

@@ -1,0 +1,78 @@
+# ============================================================
+# Jobsite Defense — Python / Pygame-CE .gitignore
+# ============================================================
+
+# ---------- Byte-compiled / optimized / DLL files ----------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ---------- C extensions ----------
+*.so
+
+# ---------- Distribution / packaging ----------
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# ---------- Virtual environments ----------
+.venv/
+venv/
+ENV/
+env/
+
+# ---------- Installer logs ----------
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ---------- Unit test / coverage ----------
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# ---------- Mypy ----------
+.mypy_cache/
+dmypy.json
+dmypy.txt
+
+# ---------- Ruff / Linters ----------
+.ruff_cache/
+
+# ---------- IDEs ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- OS artifacts ----------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+._*
+
+# ---------- Pygame / Game specific ----------
+*.save
+*.log
