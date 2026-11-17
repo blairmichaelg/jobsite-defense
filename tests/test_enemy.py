@@ -1,20 +1,16 @@
-"""Tests for src/enemy.py — movement correctness and state flags."""
+"""Tests for src/enemy.py — movement correctness and state flags.
+
+SDL dummy drivers are configured globally in ``conftest.py``; no
+``os.environ`` setup is needed here.
+"""
 
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
 import pygame
 
-pygame.init()
-
 from src.enemy import Enemy
-from src.level import WAYPOINT_PIXELS, WAYPOINTS
+from src.level import WAYPOINT_PIXELS
 from src.settings import ENEMY_SPEED
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -25,7 +21,9 @@ def _total_path_length() -> float:
     """Return the total pixel length of the waypoint path."""
     total = 0.0
     for i in range(len(WAYPOINT_PIXELS) - 1):
-        total += WAYPOINT_PIXELS[i].distance_to(WAYPOINT_PIXELS[i + 1])
+        ax, ay = WAYPOINT_PIXELS[i]
+        bx, by = WAYPOINT_PIXELS[i + 1]
+        total += pygame.Vector2(ax, ay).distance_to(pygame.Vector2(bx, by))
     return total
 
 
@@ -62,7 +60,7 @@ class TestEnemyFlags:
         assert e.reached_end is False
 
     def test_reached_end_set_after_full_run(self) -> None:
-        """After completing the path, reached_end must be True."""
+        """After completing the path, reached_end must be True and alive False."""
         e = _simulate_full_run()
         assert e.reached_end is True
         assert e.alive is False
@@ -71,7 +69,7 @@ class TestEnemyFlags:
         """Calling update on a dead enemy must not change its position."""
         e = _simulate_full_run()
         pos_before = pygame.Vector2(e.pos)
-        e.update(1.0)   # large dt — position must not shift
+        e.update(1.0)
         assert e.pos == pos_before
 
 
@@ -94,42 +92,52 @@ class TestEnemyMovement:
         """The enemy must not loop back to the start after reaching the end."""
         e = _simulate_full_run()
         pos_at_death = pygame.Vector2(e.pos)
-        # Simulate 60 more ticks — position must remain frozen.
         for _ in range(60):
             e.update(1 / 60)
         assert e.pos == pos_at_death, "Enemy moved after reaching end (looping bug)"
 
-    def test_large_dt_does_not_skip_waypoints(self) -> None:
-        """With a 2-second dt the enemy should still finish cleanly."""
+    def test_large_dt_completes_cleanly(self) -> None:
+        """With a 2-second dt the enemy must finish with correct end states.
+
+        Verifies:
+        * ``e.reached_end is True``
+        * ``e.alive is False``
+        * ``e.pos`` equals the last waypoint pixel centre.
+        """
         e = Enemy()
         for _ in range(50):
             e.update(2.0)   # deliberately un-clamped to stress leftover logic
             if not e.alive:
                 break
-        # It may finish in one tick with a 2 s step — just must not raise.
-        # Reaching here without an exception is the primary assertion.
-        assert not e.alive or e.reached_end or True  # no IndexError = pass
+
+        assert e.reached_end is True, "Enemy did not set reached_end after large-dt run"
+        assert e.alive is False, "Enemy still marked alive after reaching end"
+        last_wx, last_wy = WAYPOINT_PIXELS[-1]
+        expected = pygame.Vector2(last_wx, last_wy)
+        assert e.pos == expected, (
+            f"Enemy pos {e.pos!r} does not match exit waypoint {expected!r}"
+        )
 
     def test_distance_travelled_is_plausible(self) -> None:
         """Total distance the enemy covers must be close to the path length."""
         path_len = _total_path_length()
-        # At 120 px/s the enemy should finish in roughly path_len/120 seconds.
         expected_ticks = int(path_len / ENEMY_SPEED / (1 / 60)) + 10
         e = Enemy()
-        ticks = 0
-        for ticks in range(expected_ticks + 300):  # allow generous headroom
+        _ticks = 0
+        for _ticks in range(expected_ticks + 300):
             e.update(1 / 60)
             if not e.alive:
                 break
         assert e.reached_end is True, (
-            f"Enemy did not finish after {ticks} ticks (path_len={path_len:.1f}px)"
+            f"Enemy did not finish after {_ticks} ticks (path_len={path_len:.1f}px)"
         )
 
     def test_spawn_position_matches_first_waypoint(self) -> None:
         """A fresh enemy must spawn at WAYPOINT_PIXELS[0]."""
         e = Enemy()
-        assert abs(e.pos.x - WAYPOINT_PIXELS[0].x) < 0.01
-        assert abs(e.pos.y - WAYPOINT_PIXELS[0].y) < 0.01
+        wx, wy = WAYPOINT_PIXELS[0]
+        assert abs(e.pos.x - wx) < 0.01
+        assert abs(e.pos.y - wy) < 0.01
 
     def test_waypoint_index_advances(self) -> None:
         """After enough ticks the enemy must have advanced past waypoint 1.
@@ -138,8 +146,29 @@ class TestEnemyMovement:
         At default speed (120 px/s) that takes 3.5 s.  We wait 4 s (240 ticks).
         """
         e = Enemy()
-        for _ in range(240):   # 4 s of movement at 60 fps
+        for _ in range(240):
             e.update(1 / 60)
         assert e.waypoint_index > 1 or not e.alive, (
             "Enemy did not advance past the first waypoint after 4 s"
         )
+
+
+# ---------------------------------------------------------------------------
+# Protocol compliance
+# ---------------------------------------------------------------------------
+
+
+class TestEnemyProtocol:
+    """Verify Enemy satisfies the Entity protocol at runtime."""
+
+    def test_entity_isinstance(self) -> None:
+        """``isinstance(enemy, Entity)`` must return True."""
+        from src.protocols import Entity
+        e = Enemy()
+        assert isinstance(e, Entity), "Enemy does not satisfy the Entity protocol"
+
+    def test_has_layer_attribute(self) -> None:
+        """Enemy must expose a ``layer`` integer attribute."""
+        e = Enemy()
+        assert isinstance(e.layer, int)
+        assert e.layer == 10

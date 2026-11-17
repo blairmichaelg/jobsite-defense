@@ -1,17 +1,13 @@
-"""Tests for src/level.py — road geometry and power-up placement."""
+"""Tests for src/level.py — road geometry and power-up placement.
+
+SDL dummy drivers are configured globally in ``conftest.py``; no
+``os.environ`` setup is needed here.
+"""
 
 from __future__ import annotations
 
-import os
-
-# Ensure pygame can initialise in a headless CI environment.
-os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-
 import pygame
 import pytest
-
-pygame.init()
 
 from src.level import (
     POWERUP_TILES,
@@ -21,7 +17,6 @@ from src.level import (
     _build_road,
 )
 from src.settings import CELL_SIZE, GRID_COLS, GRID_ROWS
-
 
 # ---------------------------------------------------------------------------
 # Road geometry
@@ -42,11 +37,7 @@ class TestRoadCells:
             assert 0 <= row < GRID_ROWS, f"row {row} out of range"
 
     def test_road_cells_are_contiguous(self) -> None:
-        """Every road cell must share at least one edge with another road cell.
-
-        A cell is a neighbour of another if it differs by exactly 1 in
-        exactly one axis.  An isolated cell would indicate a gap in the path.
-        """
+        """Every road cell must share at least one edge with another road cell."""
         for col, row in ROAD_CELLS:
             neighbours = {
                 (col - 1, row),
@@ -83,9 +74,7 @@ class TestPowerupTiles:
     def test_powerups_do_not_overlap_road(self) -> None:
         """No power-up tile may sit on a road cell."""
         overlap = frozenset(POWERUP_TILES) & ROAD_CELLS
-        assert not overlap, (
-            f"Power-up tile(s) overlap road: {sorted(overlap)}"
-        )
+        assert not overlap, f"Power-up tile(s) overlap road: {sorted(overlap)}"
 
     def test_powerups_within_grid(self) -> None:
         """Every power-up tile must be inside the visible grid."""
@@ -101,22 +90,40 @@ class TestPowerupTiles:
 
 
 # ---------------------------------------------------------------------------
-# Waypoint pixels
+# Waypoint pixels — now tuple[tuple[float, float], ...]
 # ---------------------------------------------------------------------------
 
 
 class TestWaypointPixels:
-    """Validate pre-computed pixel waypoints."""
+    """Validate pre-computed pixel waypoints (primitive float pairs)."""
 
     def test_pixel_count_matches_waypoints(self) -> None:
         """WAYPOINT_PIXELS must have the same length as WAYPOINTS."""
         assert len(WAYPOINT_PIXELS) == len(WAYPOINTS)
 
     def test_pixel_values_match_formula(self) -> None:
-        """Each pixel waypoint must equal col*CELL_SIZE + half, row*CELL_SIZE + half."""
-        half = CELL_SIZE // 2
-        for (col, row), px in zip(WAYPOINTS, WAYPOINT_PIXELS):
+        """Each pixel pair must equal col*CELL_SIZE + half, row*CELL_SIZE + half."""
+        half = CELL_SIZE / 2.0
+        for (col, row), (px, py) in zip(WAYPOINTS, WAYPOINT_PIXELS, strict=False):
             expected_x = col * CELL_SIZE + half
             expected_y = row * CELL_SIZE + half
-            assert abs(px.x - expected_x) < 0.01, f"x mismatch at ({col},{row})"
-            assert abs(px.y - expected_y) < 0.01, f"y mismatch at ({col},{row})"
+            assert abs(px - expected_x) < 0.01, f"x mismatch at ({col},{row})"
+            assert abs(py - expected_y) < 0.01, f"y mismatch at ({col},{row})"
+
+    def test_pixels_are_plain_tuples(self) -> None:
+        """WAYPOINT_PIXELS entries must be plain tuples, not Vector2 objects."""
+        for entry in WAYPOINT_PIXELS:
+            assert isinstance(entry, tuple), (
+                f"Expected tuple, got {type(entry).__name__}: {entry!r}"
+            )
+            assert not isinstance(entry, pygame.Vector2), (
+                "WAYPOINT_PIXELS must not store mutable Vector2 objects"
+            )
+
+    def test_vector2_construction_from_pixels(self) -> None:
+        """Constructing a Vector2 from each pixel pair must work correctly."""
+        for (col, row), px in zip(WAYPOINTS, WAYPOINT_PIXELS, strict=False):
+            v = pygame.Vector2(*px)
+            half = CELL_SIZE / 2.0
+            assert abs(v.x - (col * CELL_SIZE + half)) < 0.01
+            assert abs(v.y - (row * CELL_SIZE + half)) < 0.01

@@ -1,12 +1,9 @@
 """Jobsite Defense — global constants and configuration.
 
-Phase 1.5 changes
+Phase 2 additions
 -----------------
-* Level geometry (``WAYPOINTS``, ``ROAD_CELLS``, ``POWERUP_TILES``) has
-  been moved to :mod:`src.level`.  ``settings.py`` now contains only
-  visual and engine constants with no side effects.
-* ``POWERUP_COLORS`` is kept here as the canonical colour map; it is
-  re-exported by :mod:`src.level` for convenience.
+* Title bumped to Phase 2.
+* Tower base stats added (Nail Gunner).
 
 Nothing in this module has side effects.
 """
@@ -35,7 +32,7 @@ WINDOW_HEIGHT: int = CELL_SIZE * GRID_ROWS  # 720
 TARGET_FPS: int = 60
 """Frame-rate cap for the game loop."""
 
-WINDOW_TITLE: str = "Jobsite Defense — Phase 1.5"
+WINDOW_TITLE: str = "Jobsite Defense — Phase 2"
 """Caption shown in the window title bar."""
 
 # ---------------------------------------------------------------------------
@@ -75,6 +72,25 @@ ENEMY_RADIUS: int = 14
 
 ENEMY_SPEED: float = 120.0
 """Default enemy speed in pixels per second."""
+
+ENEMY_MAX_HEALTH: float = 100.0
+"""Default starting health for a Rotted 2×4 enemy."""
+
+# ---------------------------------------------------------------------------
+# Tower — Nail Gunner base stats
+# ---------------------------------------------------------------------------
+
+NAIL_GUNNER_COST: int = 500
+"""Purchase cost in project budget dollars."""
+
+NAIL_GUNNER_RANGE: float = 120.0
+"""Base attack range in pixels (2 cells)."""
+
+NAIL_GUNNER_COOLDOWN: float = 0.8
+"""Seconds between successive shots."""
+
+NAIL_GUNNER_DAMAGE: float = 25.0
+"""Hit-scan damage per nail."""
 
 # ---------------------------------------------------------------------------
 # Power-up colour map

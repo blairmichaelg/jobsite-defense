@@ -1,13 +1,12 @@
 """Jobsite Defense — enemy entity and movement.
 
-Phase 1.5 changes
------------------
-* Imports waypoint pixel data from :mod:`level` (``WAYPOINT_PIXELS``).
-* ``update()`` carries leftover movement distance across waypoint corners
-  to eliminate micro-stutters.
-* No looping: ``alive`` is set to ``False`` and ``reached_end`` is set to
-  ``True`` when the final waypoint is passed.  Respawning is the
-  responsibility of the caller (``main.py``).
+Phase 2 changes
+---------------
+* ``layer: int = 10`` added to satisfy the updated ``Entity`` protocol.
+* ``WAYPOINT_PIXELS`` is now ``tuple[tuple[float, float], ...]``; every
+  read that previously relied on ``Vector2`` arithmetic now wraps the
+  primitive pair in a fresh ``pygame.Vector2(wx, wy)`` to avoid shared-
+  state mutation.
 """
 
 from __future__ import annotations
@@ -17,7 +16,13 @@ from dataclasses import dataclass, field
 import pygame
 
 from src.level import WAYPOINT_PIXELS
-from src.settings import COLOR_ENEMY, COLOR_ENEMY_OUTLINE, ENEMY_RADIUS, ENEMY_SPEED
+from src.settings import (
+    COLOR_ENEMY,
+    COLOR_ENEMY_OUTLINE,
+    ENEMY_MAX_HEALTH,
+    ENEMY_RADIUS,
+    ENEMY_SPEED,
+)
 
 
 @dataclass
@@ -28,18 +33,38 @@ class Enemy:
         pos: Current world position with sub-pixel precision.
         waypoint_index: Index of the *next* pixel waypoint to reach.
         speed: Movement speed in pixels per second.
-        alive: ``False`` once the enemy has left the field.
+        health: Remaining hit-points.
+        alive: ``False`` once the enemy has left the field or died.
         reached_end: ``True`` when the enemy exited via the final waypoint.
-            The game loop reads this to decrement player lives.
+            The game loop reads this to decrement ``Economy.client_patience``.
+        layer: Render/update layer — enemies sit at layer 10.
     """
 
     pos: pygame.Vector2 = field(
-        default_factory=lambda: pygame.Vector2(WAYPOINT_PIXELS[0])
+        default_factory=lambda: pygame.Vector2(*WAYPOINT_PIXELS[0])
     )
     waypoint_index: int = 1
     speed: float = ENEMY_SPEED
+    health: float = ENEMY_MAX_HEALTH
     alive: bool = True
     reached_end: bool = False
+    layer: int = 10
+
+    # ------------------------------------------------------------------
+    # Damage
+    # ------------------------------------------------------------------
+
+    def take_damage(self, amount: float) -> None:
+        """Reduce health by *amount*; mark dead if health drops to zero.
+
+        Args:
+            amount: Raw damage to apply (before any future resistances).
+        """
+        if not self.alive:
+            return
+        self.health -= amount
+        if self.health <= 0.0:
+            self.alive = False
 
     # ------------------------------------------------------------------
     # Update
@@ -58,15 +83,15 @@ class Enemy:
         if not self.alive:
             return
 
-        budget = self.speed * dt  # total pixels available this frame
+        budget = self.speed * dt
 
         while budget > 0.0 and self.waypoint_index < len(WAYPOINT_PIXELS):
-            target = WAYPOINT_PIXELS[self.waypoint_index]
+            wx, wy = WAYPOINT_PIXELS[self.waypoint_index]
+            target = pygame.Vector2(wx, wy)
             dist_to_target = self.pos.distance_to(target)
 
             if budget >= dist_to_target:
-                # Snap exactly to corner, carry remainder to next segment.
-                self.pos = pygame.Vector2(target)
+                self.pos = target          # snap exactly to corner
                 budget -= dist_to_target
                 self.waypoint_index += 1
             else:

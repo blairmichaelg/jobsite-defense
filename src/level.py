@@ -4,6 +4,15 @@ All geometry for Level 1 lives here.  ``settings.py`` retains only
 visual/engine constants so there is a clean boundary between *what the
 level looks like* and *how the engine renders it*.
 
+Phase 2 change
+--------------
+``WAYPOINT_PIXELS`` is now a ``tuple[tuple[float, float], ...]`` of plain
+primitive pairs rather than ``pygame.Vector2`` objects.  Storing mutable
+objects in a module-level constant is a hazard: any caller that did
+``pos = WAYPOINT_PIXELS[0]`` would hold a **reference** to the shared
+object, not a copy.  Plain ``(float, float)`` tuples are immutable by
+definition — callers construct a fresh ``Vector2`` when they need one.
+
 Design rules
 ------------
 * Spawn waypoint is one cell **left** of the grid (col = -1) so the
@@ -18,9 +27,8 @@ Design rules
 
 from __future__ import annotations
 
-import pygame
-
-from src.settings import CELL_SIZE, GRID_COLS, POWERUP_COLORS as POWERUP_COLORS  # re-export
+from src.settings import CELL_SIZE, GRID_COLS
+from src.settings import POWERUP_COLORS as POWERUP_COLORS  # re-export
 
 # ---------------------------------------------------------------------------
 # Waypoints  (col, row) — ordered path the enemy follows
@@ -94,24 +102,32 @@ ROAD_CELLS: frozenset[tuple[int, int]] = _build_road(WAYPOINTS)
 """Immutable on-grid road cells derived from WAYPOINTS."""
 
 
-def _waypoint_pixels(wps: tuple[tuple[int, int], ...]) -> tuple[pygame.Vector2, ...]:
-    """Convert (col, row) waypoints to pixel-centre Vector2 objects.
+def _waypoint_pixels(
+    wps: tuple[tuple[int, int], ...],
+) -> tuple[tuple[float, float], ...]:
+    """Convert (col, row) waypoints to pixel-centre ``(x, y)`` float pairs.
+
+    Returns immutable primitive tuples rather than ``pygame.Vector2``
+    objects to prevent accidental shared-state mutation.  Callers that
+    need a ``Vector2`` for arithmetic should write::
+
+        pos = pygame.Vector2(WAYPOINT_PIXELS[i])
 
     Args:
         wps: Grid-coordinate waypoints including off-screen entries.
 
     Returns:
-        Tuple of pixel-space Vector2 positions (one per waypoint).
+        Tuple of ``(px_x, px_y)`` float pairs, one per waypoint.
     """
-    half = CELL_SIZE // 2
+    half = CELL_SIZE / 2.0
     return tuple(
-        pygame.Vector2(col * CELL_SIZE + half, row * CELL_SIZE + half)
+        (col * CELL_SIZE + half, row * CELL_SIZE + half)
         for col, row in wps
     )
 
 
-WAYPOINT_PIXELS: tuple[pygame.Vector2, ...] = _waypoint_pixels(WAYPOINTS)
-"""Pre-computed pixel centres for every waypoint (including off-screen)."""
+WAYPOINT_PIXELS: tuple[tuple[float, float], ...] = _waypoint_pixels(WAYPOINTS)
+"""Pre-computed pixel centres for every waypoint as immutable ``(x, y)`` pairs."""
 
 # ---------------------------------------------------------------------------
 # Power-up tiles — {(col, row): (effect_name, multiplier)}
