@@ -1,39 +1,28 @@
 """Jobsite Defense — tower definitions.
 
-Phase 2: Nail Gunner
---------------------
-The Nail Gunner is the basic single-target tower.  It scans the active
-enemy list each frame, picks the closest enemy within range, and
-instantly deals hit-scan damage (no projectile travel time yet).
+Phase 2.5 changes
+-----------------
+* ``update(dt, world)`` now reads ``world.enemies`` directly — the
+  ``update_with_enemies`` helper method is gone.
+* ``attack_speed`` modifier is implemented:
+  ``effective_cooldown = cooldown_max / attack_speed_multiplier``.
+* ``_range_sq`` pre-computed in ``__post_init__``; ``_nearest_enemy``
+  uses ``distance_squared_to()`` to avoid sqrt on every candidate.
+* When a killing blow is dealt, ``world.request_earn(world.kill_bounty)``
+  queues the bounty; the main loop pays it out via ``world.flush_earnings``.
 
-Visual language
----------------
-* Body: dark grey filled square covering most of the cell.
-* Barrel indicator: a small rotating orange triangle whose tip points at
-  the last locked-on enemy (or spins idly when no target is in range).
-* Shot FX: a bright yellow line is drawn from the tower centre to the
-  hit enemy for one frame (``_shot_flash`` timer).
-* Range ring: a faint circle drawn only when the tower is selected
-  (``selected`` flag, toggled by the UI layer).
-
-Modifier stack
---------------
-When the grid cell the tower occupies is a power-up tile (from
-``POWERUP_TILES``), the tower's effective stats are scaled at construction
-time and whenever a stat is recalculated:
-
-    effective_range  = base_range  × range_multiplier
-    effective_damage = base_damage × damage_multiplier
-
-``attack_speed`` multipliers are reserved for future implementation
-(cooldown reduction).
+Modifier stack (complete)
+-------------------------
+    effective_range    = base_range    × range_multiplier
+    effective_damage   = base_damage   × damage_multiplier
+    effective_cooldown = cooldown_max  / attack_speed_multiplier
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pygame
 
@@ -78,9 +67,11 @@ class NailGunner:
         cost: Purchase cost (dollars).
         base_range: Un-modified attack range in pixels.
         base_damage: Un-modified damage per shot.
-        cooldown_max: Seconds between shots.
+        cooldown_max: Base seconds between shots (before modifiers).
         effective_range: Actual range after power-up multiplier.
         effective_damage: Actual damage after power-up multiplier.
+        effective_cooldown: Actual cooldown after attack_speed modifier.
+        _range_sq: ``effective_range ** 2`` — avoids sqrt in hot path.
         _cooldown_remaining: Seconds until next shot is allowed.
         _barrel_angle: Current barrel rotation in degrees (0° = right).
         _shot_target: Pixel position of last hit (for the flash line).
@@ -98,6 +89,8 @@ class NailGunner:
     cooldown_max: float = NAIL_GUNNER_COOLDOWN
     effective_range: float = field(init=False)
     effective_damage: float = field(init=False)
+    effective_cooldown: float = field(init=False)
+    _range_sq: float = field(init=False)
     _cooldown_remaining: float = field(default=0.0, init=False)
     _barrel_angle: float = field(default=0.0, init=False)
     _shot_target: pygame.Vector2 | None = field(default=None, init=False)
@@ -115,34 +108,44 @@ class NailGunner:
         self._apply_modifiers()
 
     def _apply_modifiers(self) -> None:
-        """Read the cell's power-up tile (if any) and scale effective stats."""
+        """Read the cell's power-up tile (if any) and scale effective stats.
+
+        Modifier rules
+        --------------
+        * ``"range"``        → ``effective_range    = base_range    × mult``
+        * ``"damage"``       → ``effective_damage   = base_damage   × mult``
+        * ``"attack_speed"`` → ``effective_cooldown = cooldown_max  / mult``
+          (higher mult = faster fire rate = shorter cooldown)
+        """
         self.effective_range = self.base_range
         self.effective_damage = self.base_damage
+        self.effective_cooldown = self.cooldown_max
 
         tile = POWERUP_TILES.get((self.col, self.row))
-        if tile is None:
-            return
+        if tile is not None:
+            effect, multiplier = tile
+            if effect == "range":
+                self.effective_range = self.base_range * multiplier
+            elif effect == "damage":
+                self.effective_damage = self.base_damage * multiplier
+            elif effect == "attack_speed":
+                # More speed → shorter cooldown
+                self.effective_cooldown = self.cooldown_max / multiplier
 
-        effect, multiplier = tile
-        if effect == "range":
-            self.effective_range = self.base_range * multiplier
-        elif effect == "damage":
-            self.effective_damage = self.base_damage * multiplier
-        # attack_speed: future — would reduce cooldown_max
+        # Pre-compute squared range to avoid sqrt in _nearest_enemy.
+        self._range_sq = self.effective_range ** 2
 
     # ------------------------------------------------------------------
     # Entity protocol
     # ------------------------------------------------------------------
 
-    def update(self, dt: float) -> None:
-        """Scan for targets, fire if ready, tick animations.
-
-        This method must be called with the live enemy list each frame.
-        Because ``Entity.update`` only takes ``dt``, the entity list is
-        injected via :meth:`update_with_enemies` from the game loop.
+    def update(self, dt: float, world: Any) -> None:  # noqa: ANN401
+        """Tick timers, scan world.enemies, and fire if the cooldown allows.
 
         Args:
             dt: Clamped delta-time in seconds.
+            world: Shared ``World`` context; reads ``world.enemies`` and
+                calls ``world.request_earn`` on kill.
         """
         # Tick cooldown
         if self._cooldown_remaining > 0.0:
@@ -157,31 +160,28 @@ class NailGunner:
         # Idle barrel spin when nothing targeted this frame
         self._barrel_angle = (self._barrel_angle + _IDLE_SPIN_RATE * dt) % 360.0
 
-    def update_with_enemies(self, dt: float, enemies: list[Enemy]) -> None:
-        """Full update: tick timers AND attempt to fire at nearest enemy.
-
-        Called by the game loop in place of the bare ``update(dt)`` so
-        the tower has access to the live enemy list without storing a
-        global reference.
-
-        Args:
-            dt: Clamped delta-time in seconds.
-            enemies: All currently alive ``Enemy`` instances.
-        """
-        self.update(dt)
-
         if self._cooldown_remaining > 0.0:
             return
 
-        target = self._nearest_enemy(enemies)
+        # Resolve world to get enemies list (TYPE_CHECKING import avoids cycle)
+        from src.world import World as _World  # local import — no circular dep at runtime
+        if not isinstance(world, _World):
+            return
+
+        target = self._nearest_enemy(world.enemies)
         if target is None:
             return
 
-        # Fire — hit-scan: apply damage immediately.
+        # Remember health before damage to detect kill
+        was_alive = target.alive
         target.take_damage(self.effective_damage)
-        self._cooldown_remaining = self.cooldown_max
+        self._cooldown_remaining = self.effective_cooldown
         self._shot_target = pygame.Vector2(target.pos)
         self._shot_flash = _SHOT_FLASH_DURATION
+
+        # Queue bounty if this shot killed the enemy
+        if was_alive and not target.alive:
+            world.request_earn(world.kill_bounty)
 
         # Aim barrel at target.
         delta = target.pos - self.center
@@ -191,18 +191,22 @@ class NailGunner:
     def _nearest_enemy(self, enemies: list[Enemy]) -> Enemy | None:
         """Return the closest alive enemy within effective_range, or None.
 
+        Uses pre-computed ``_range_sq`` and ``distance_squared_to()`` to
+        avoid a square root per candidate — measurably faster on the
+        target CPU when many enemies are present.
+
         Args:
-            enemies: All currently alive ``Enemy`` instances.
+            enemies: All ``Enemy`` instances (alive or dead).
         """
         best: Enemy | None = None
-        best_dist = self.effective_range
+        best_dist_sq = self._range_sq
 
         for enemy in enemies:
             if not enemy.alive:
                 continue
-            d = self.center.distance_to(enemy.pos)
-            if d <= best_dist:
-                best_dist = d
+            d_sq = self.center.distance_squared_to(enemy.pos)
+            if d_sq <= best_dist_sq:
+                best_dist_sq = d_sq
                 best = enemy
 
         return best
@@ -214,10 +218,9 @@ class NailGunner:
             surface: The main display surface.
         """
         rect = cell_rect(self.col, self.row)
-        body_rect = rect.inflate(-12, -12)   # slight inset from grid border
+        body_rect = rect.inflate(-12, -12)
         pygame.draw.rect(surface, _COLOR_TOWER_BODY, body_rect, border_radius=4)
 
-        # Optional range ring when selected
         if self.selected:
             pygame.draw.circle(
                 surface,
@@ -227,10 +230,8 @@ class NailGunner:
                 width=1,
             )
 
-        # Rotating barrel triangle (orange)
         self._draw_barrel(surface)
 
-        # Shot flash — a bright yellow line to the hit location
         if self._shot_flash > 0.0 and self._shot_target is not None:
             pygame.draw.line(
                 surface,

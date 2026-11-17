@@ -39,7 +39,7 @@ def _simulate_full_run(speed: float = ENEMY_SPEED, dt: float = 1 / 60) -> Enemy:
     """
     enemy = Enemy(speed=speed)
     for _ in range(10_000):
-        enemy.update(dt)
+        enemy.update(dt, None)
         if not enemy.alive:
             break
     return enemy
@@ -69,7 +69,7 @@ class TestEnemyFlags:
         """Calling update on a dead enemy must not change its position."""
         e = _simulate_full_run()
         pos_before = pygame.Vector2(e.pos)
-        e.update(1.0)
+        e.update(1.0, None)
         assert e.pos == pos_before
 
 
@@ -93,7 +93,7 @@ class TestEnemyMovement:
         e = _simulate_full_run()
         pos_at_death = pygame.Vector2(e.pos)
         for _ in range(60):
-            e.update(1 / 60)
+            e.update(1 / 60, None)
         assert e.pos == pos_at_death, "Enemy moved after reaching end (looping bug)"
 
     def test_large_dt_completes_cleanly(self) -> None:
@@ -106,7 +106,7 @@ class TestEnemyMovement:
         """
         e = Enemy()
         for _ in range(50):
-            e.update(2.0)   # deliberately un-clamped to stress leftover logic
+            e.update(2.0, None)   # deliberately un-clamped to stress leftover logic
             if not e.alive:
                 break
 
@@ -125,7 +125,7 @@ class TestEnemyMovement:
         e = Enemy()
         _ticks = 0
         for _ticks in range(expected_ticks + 300):
-            e.update(1 / 60)
+            e.update(1 / 60, None)
             if not e.alive:
                 break
         assert e.reached_end is True, (
@@ -147,7 +147,7 @@ class TestEnemyMovement:
         """
         e = Enemy()
         for _ in range(240):
-            e.update(1 / 60)
+            e.update(1 / 60, None)
         assert e.waypoint_index > 1 or not e.alive, (
             "Enemy did not advance past the first waypoint after 4 s"
         )

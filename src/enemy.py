@@ -1,17 +1,17 @@
 """Jobsite Defense — enemy entity and movement.
 
-Phase 2 changes
----------------
-* ``layer: int = 10`` added to satisfy the updated ``Entity`` protocol.
-* ``WAYPOINT_PIXELS`` is now ``tuple[tuple[float, float], ...]``; every
-  read that previously relied on ``Vector2`` arithmetic now wraps the
-  primitive pair in a fresh ``pygame.Vector2(wx, wy)`` to avoid shared-
-  state mutation.
+Phase 2.5 change
+----------------
+``update(dt, world)`` now accepts the ``World`` context argument required
+by the updated ``Entity`` protocol.  The enemy does not currently need to
+read from ``world``, but the signature must match so the game loop can
+call all entities uniformly.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import pygame
 
@@ -36,7 +36,7 @@ class Enemy:
         health: Remaining hit-points.
         alive: ``False`` once the enemy has left the field or died.
         reached_end: ``True`` when the enemy exited via the final waypoint.
-            The game loop reads this to decrement ``Economy.client_patience``.
+            The main loop reads this to decrement ``Economy.client_patience``.
         layer: Render/update layer — enemies sit at layer 10.
     """
 
@@ -70,7 +70,7 @@ class Enemy:
     # Update
     # ------------------------------------------------------------------
 
-    def update(self, dt: float) -> None:
+    def update(self, dt: float, world: Any) -> None:  # noqa: ANN401
         """Advance the enemy along the waypoint path.
 
         Leftover movement distance from reaching a waypoint is forwarded
@@ -79,6 +79,7 @@ class Enemy:
 
         Args:
             dt: Clamped delta-time (≤ 0.05 s) in seconds.
+            world: Shared ``World`` context (unused by enemies currently).
         """
         if not self.alive:
             return

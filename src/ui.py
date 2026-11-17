@@ -1,26 +1,19 @@
 """Jobsite Defense — Radial Build Menu.
 
-The ``RadialMenu`` opens when the player left-clicks a buildable cell
-(grass, not road, not already occupied by a tower).  It presents circular
-option buttons around the click point.  Phase 2 ships with one option:
-the Nail Gunner ($500).
-
-Interaction model
+Phase 2.5 changes
 -----------------
-* **Left-click buildable cell** → menu opens centred on that cell.
-* **Left-click a menu button**  → purchase tower, place on cell, close.
-* **Right-click anywhere / Escape** → close without buying.
-* **Left-click elsewhere**     → close without buying.
-
-The menu satisfies both ``Entity`` (layer 90, drawn on top of everything)
-and ``Clickable`` (consumes MOUSEBUTTONDOWN events while open).
+* ``update(dt, world)`` signature updated to match the ``Entity`` protocol.
+* ``_build_buttons``: the default button angle is 270° (above the cell).
+  If the computed button centre would have ``y < 0`` (i.e. the clicked
+  cell is in row 0), the angle flips to 90° (below the cell) so the
+  button remains on-screen and row-0 tiles stay buildable.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pygame
 
@@ -45,14 +38,14 @@ if TYPE_CHECKING:
 
 _COLOR_BUTTON_BG: tuple[int, int, int, int] = (30, 30, 30, 200)
 _COLOR_BUTTON_HOVER: tuple[int, int, int, int] = (60, 60, 60, 220)
-_COLOR_BUTTON_BORDER: tuple[int, int, int] = (180, 140, 60)
 _COLOR_BUTTON_TEXT: tuple[int, int, int] = (240, 230, 200)
 _COLOR_BUTTON_COST_OK: tuple[int, int, int] = (100, 220, 100)
 _COLOR_BUTTON_COST_NO: tuple[int, int, int] = (220, 80, 80)
-_COLOR_CLOSE_HINT: tuple[int, int, int] = (160, 160, 160)
 
 _BUTTON_RADIUS: int = 36       # pixel radius of each option button
 _ORBIT_RADIUS: int = 70        # distance from menu centre to button centre
+_DEFAULT_ANGLE: float = 270.0  # above the cell (standard)
+_FLIPPED_ANGLE: float = 90.0   # below the cell (row-0 fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +56,8 @@ _ORBIT_RADIUS: int = 70        # distance from menu centre to button centre
 class _MenuButton:
     label: str
     cost: int
-    angle_deg: float        # position on the orbit ring
-    center: pygame.Vector2  # computed at menu open time
+    angle_deg: float
+    center: pygame.Vector2
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +76,6 @@ class RadialMenu:
     open: bool = field(default=False, init=False)
     layer: int = field(default=90, init=False)
 
-    # Private state
     _cell: tuple[int, int] = field(default=(0, 0), init=False)
     _menu_center: pygame.Vector2 = field(
         default_factory=lambda: pygame.Vector2(0, 0), init=False
@@ -92,7 +84,6 @@ class RadialMenu:
     _font_label: pygame.font.Font | None = field(default=None, init=False)
     _font_cost: pygame.font.Font | None = field(default=None, init=False)
 
-    # References injected by main.py at construction time
     _economy: Economy | None = field(default=None, init=False)
     _towers: dict[tuple[int, int], NailGunner] = field(
         default_factory=dict, init=False
@@ -118,11 +109,12 @@ class RadialMenu:
     # Entity protocol
     # ------------------------------------------------------------------
 
-    def update(self, dt: float) -> None:  # noqa: ARG002
+    def update(self, dt: float, world: Any) -> None:  # noqa: ANN401, ARG002
         """No per-frame state updates needed for the menu.
 
         Args:
             dt: Unused; present to satisfy the ``Entity`` protocol.
+            world: Unused; present to satisfy the ``Entity`` protocol.
         """
 
     def draw(self, surface: pygame.Surface) -> None:
@@ -141,15 +133,15 @@ class RadialMenu:
             dist = math.hypot(mouse_pos[0] - bc[0], mouse_pos[1] - bc[1])
             hovering = dist <= _BUTTON_RADIUS
 
-            # Semi-transparent background circle
             overlay = pygame.Surface(
                 (_BUTTON_RADIUS * 2, _BUTTON_RADIUS * 2), pygame.SRCALPHA
             )
             bg_color = _COLOR_BUTTON_HOVER if hovering else _COLOR_BUTTON_BG
-            pygame.draw.circle(overlay, bg_color, (_BUTTON_RADIUS, _BUTTON_RADIUS), _BUTTON_RADIUS)
+            pygame.draw.circle(
+                overlay, bg_color, (_BUTTON_RADIUS, _BUTTON_RADIUS), _BUTTON_RADIUS
+            )
             surface.blit(overlay, (bc[0] - _BUTTON_RADIUS, bc[1] - _BUTTON_RADIUS))
 
-            # Border ring
             border_color = (
                 _COLOR_BUTTON_COST_OK
                 if self._economy.can_afford(btn.cost)
@@ -158,11 +150,9 @@ class RadialMenu:
             pygame.draw.circle(surface, border_color, bc, _BUTTON_RADIUS, width=2)
 
             if self._font_label and self._font_cost:
-                # Label (tower name)
                 lbl = self._font_label.render(btn.label, True, _COLOR_BUTTON_TEXT)
                 surface.blit(lbl, lbl.get_rect(center=(bc[0], bc[1] - 7)))
 
-                # Cost
                 cost_color = (
                     _COLOR_BUTTON_COST_OK
                     if self._economy.can_afford(btn.cost)
@@ -189,13 +179,12 @@ class RadialMenu:
             return True
 
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 3 and self.open:   # right-click → close
+            if event.button == 3 and self.open:
                 self.open = False
                 return True
 
-            if event.button == 1:   # left-click
+            if event.button == 1:
                 if self.open:
-                    # Check button hits first
                     for btn in self._buttons:
                         bc = (int(btn.center.x), int(btn.center.y))
                         dist = math.hypot(event.pos[0] - bc[0], event.pos[1] - bc[1])
@@ -203,11 +192,9 @@ class RadialMenu:
                             self._try_purchase(btn)
                             self.open = False
                             return True
-                    # Clicked outside any button — close
                     self.open = False
                     return True
                 else:
-                    # Possibly open the menu on a buildable cell
                     return self._try_open(event.pos)
 
         return False
@@ -218,11 +205,6 @@ class RadialMenu:
 
     def _try_open(self, mouse_pos: tuple[int, int]) -> bool:
         """Open the menu if ``mouse_pos`` is on a buildable grass cell.
-
-        A cell is buildable when it is:
-        * Inside the grid.
-        * Not a road cell.
-        * Not already occupied by a tower.
 
         Args:
             mouse_pos: Screen pixel position of the click.
@@ -249,14 +231,26 @@ class RadialMenu:
         return True
 
     def _build_buttons(self) -> None:
-        """Populate ``_buttons`` with the available tower options."""
-        # Phase 2: one option — Nail Gunner, placed at top (270°)
-        options: list[tuple[str, int, float]] = [
-            ("Nail\nGunner", NAIL_GUNNER_COST, 270.0),
+        """Populate ``_buttons``, flipping angle if the button would go off-screen.
+
+        Default placement is 270° (above the clicked cell).  If the
+        resulting button centre would have ``y < 0`` — which happens when
+        the player clicks a row-0 cell — the angle is flipped to 90°
+        (below the cell) so the button stays visible.
+        """
+        base_options: list[tuple[str, int]] = [
+            ("Nail Gunner", NAIL_GUNNER_COST),
         ]
         self._buttons = []
-        for label, cost, angle in options:
+        for label, cost in base_options:
+            # Try the default (above) angle first; fall back to below.
+            angle = _DEFAULT_ANGLE
             angle_rad = math.radians(angle)
+            candidate_y = self._menu_center.y + math.sin(angle_rad) * _ORBIT_RADIUS
+            if candidate_y < 0:
+                angle = _FLIPPED_ANGLE
+                angle_rad = math.radians(angle)
+
             center = pygame.Vector2(
                 self._menu_center.x + math.cos(angle_rad) * _ORBIT_RADIUS,
                 self._menu_center.y + math.sin(angle_rad) * _ORBIT_RADIUS,
@@ -274,12 +268,11 @@ class RadialMenu:
         if self._economy is None:
             return
         if not self._economy.spend(btn.cost):
-            return   # insufficient funds — no purchase
+            return
 
-        from src.tower import NailGunner  # local import avoids circular dep at module level
+        from src.tower import NailGunner  # local import — avoids circular dep
         col, row = self._cell
-        tower = NailGunner(col=col, row=row)
-        self._towers[(col, row)] = tower
+        self._towers[(col, row)] = NailGunner(col=col, row=row)
 
 
 # Type narrowing assertions for the Protocol checker.

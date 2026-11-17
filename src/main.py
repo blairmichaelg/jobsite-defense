@@ -1,18 +1,19 @@
 """Jobsite Defense — main entry point and game loop.
 
-Phase 2 changes
----------------
-* ``Economy`` dataclass added; patience decrements on enemy escape.
-* ``entities: list[Entity]`` replaces the bare ``enemy`` variable.
-  Entities are sorted by ``layer`` ascending; the loop iterates once for
-  ``update`` and once for ``draw``.  Towers live in a parallel
-  ``towers: dict[tuple[int,int], NailGunner]`` for fast spatial lookups.
-* ``RadialMenu`` handles its own click events via the ``Clickable``
-  protocol; the game loop dispatches events to all ``Clickable`` entities
-  in reverse layer order (top-most UI first) and stops on first consumer.
-* HUD now displays Budget ($$) and Patience alongside FPS.
-* Display remains ``SCALED | DOUBLEBUF`` with ``vsync=1``; dt clamped to
-  0.05 s.
+Phase 2.5 changes
+-----------------
+* ``World`` context object introduced.  Every ``Entity.update(dt, world)``
+  call passes ``world`` so entities can read enemies, towers, and economy
+  without storing globals.
+* Entity list is a **persistent** ``list[Entity]``; dead enemies are culled
+  once after the update pass — no auto-respawn.  Phase 3's Wave Manager
+  will append enemies via ``world.enemies``.
+* ESC fix: Clickable dispatch runs first on every event.  ``running = False``
+  is only set when QUIT arrives or ESC is unhandled by all Clickables.
+* HUD rebuilds immediately when ``project_budget`` or ``client_patience``
+  change (tracked via snapshot), not just on the 0.5 s timer.
+* Kill bounty: ``world.flush_earnings()`` pays queued rewards after the
+  update pass and forces an immediate HUD refresh.
 """
 
 from __future__ import annotations
@@ -28,12 +29,11 @@ from src.protocols import Clickable, Entity
 from src.render import build_static_layer
 from src.settings import (
     TARGET_FPS,
-    WINDOW_HEIGHT,
     WINDOW_TITLE,
     WINDOW_WIDTH,
 )
-from src.tower import NailGunner
 from src.ui import RadialMenu
+from src.world import World
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -42,7 +42,6 @@ from src.ui import RadialMenu
 _DT_MAX: float = 0.05
 _HUD_REFRESH_INTERVAL: float = 0.5
 
-# HUD layout
 _HUD_X: int = 8
 _HUD_Y: int = 6
 _HUD_LINE_H: int = 18
@@ -62,9 +61,19 @@ def _make_enemy() -> Enemy:
     return Enemy(pos=pygame.Vector2(wx, wy))
 
 
-def _sorted_entities(raw: list[Entity]) -> list[Entity]:
-    """Return *raw* sorted ascending by ``layer`` (stable sort)."""
-    return sorted(raw, key=lambda e: e.layer)
+def _build_entity_list(world: World, menu: RadialMenu) -> list[Entity]:
+    """Return entities sorted by layer from live world state.
+
+    Includes alive enemies, all placed towers, and the menu.  Dead
+    enemies are excluded — the Phase 3 Wave Manager will handle spawning.
+
+    Args:
+        world: Shared game state.
+        menu: The persistent radial-menu singleton.
+    """
+    alive: list[Entity] = [e for e in world.enemies if e.alive]
+    towers: list[Entity] = list(world.towers.values())
+    return sorted(alive + towers + [menu], key=lambda e: e.layer)
 
 
 # ---------------------------------------------------------------------------
@@ -72,61 +81,59 @@ def _sorted_entities(raw: list[Entity]) -> list[Entity]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Run the Jobsite Defense Phase 2 game loop."""
+    """Run the Jobsite Defense Phase 2.5 game loop."""
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
     pygame.init()
 
     screen = pygame.display.set_mode(
-        (WINDOW_WIDTH, WINDOW_HEIGHT),
+        (WINDOW_WIDTH, 720),
         pygame.SCALED | pygame.DOUBLEBUF,
         vsync=1,
     )
     pygame.display.set_caption(WINDOW_TITLE)
     clock = pygame.time.Clock()
 
-    # Fonts
     label_font = pygame.font.Font(None, 20)
     hud_font = pygame.font.Font(None, 22)
 
-    # Static background — baked once at startup
     static_layer = build_static_layer(label_font)
 
-    # Game state
-    economy = Economy()
-    towers: dict[tuple[int, int], NailGunner] = {}
+    # --- World -----------------------------------------------------------
+    world = World(
+        enemies=[_make_enemy()],   # one demo enemy for Phase 2.5
+        economy=Economy(),
+    )
 
-    # Radial menu — wired up to economy + towers dict
+    # --- Radial menu (Clickable UI, not in world.enemies) ----------------
     menu = RadialMenu()
-    menu.configure(economy, towers)
+    menu.configure(world.economy, world.towers)
 
-    # Seed first enemy
-    enemy = _make_enemy()
+    # --- Entity list (rebuilt after each mutation) -----------------------
+    entities: list[Entity] = _build_entity_list(world, menu)
 
-    # Entity list (re-sorted whenever composition changes)
-    entities: list[Entity] = _sorted_entities([enemy, menu])
-
-    # HUD cache
-    hud_surfaces: list[pygame.Surface] = []
-    hud_timer = 0.0
+    # --- HUD cache -------------------------------------------------------
+    prev_budget = world.economy.project_budget
 
     def _rebuild_hud() -> list[pygame.Surface]:
         patience_color = (
             _COLOR_HUD_PATIENCE_LOW
-            if economy.client_patience <= _PATIENCE_LOW_THRESHOLD
+            if world.economy.client_patience <= _PATIENCE_LOW_THRESHOLD
             else _COLOR_HUD_PATIENCE_OK
         )
-        fps_txt = f"FPS: {clock.get_fps():.0f}"
-        budget_txt = f"Budget: ${economy.project_budget:,}"
-        patience_txt = f"Patience: {economy.client_patience}"
         return [
-            hud_font.render(fps_txt, True, _COLOR_HUD_TEXT),
-            hud_font.render(budget_txt, True, _COLOR_HUD_TEXT),
-            hud_font.render(patience_txt, True, patience_color),
+            hud_font.render(f"FPS: {clock.get_fps():.0f}", True, _COLOR_HUD_TEXT),
+            hud_font.render(
+                f"Budget: ${world.economy.project_budget:,}", True, _COLOR_HUD_TEXT
+            ),
+            hud_font.render(
+                f"Patience: {world.economy.client_patience}", True, patience_color
+            ),
         ]
 
     hud_surfaces = _rebuild_hud()
+    hud_timer = _HUD_REFRESH_INTERVAL
 
     # ------------------------------------------------------------------
     # Game loop
@@ -136,7 +143,7 @@ def main() -> None:
         # 1. Clamped variable time-step
         dt = min(clock.tick(TARGET_FPS) / 1000.0, _DT_MAX)
 
-        # 2. Events — dispatched to Clickable entities (highest layer first)
+        # 2. Events — Clickables consume first; unhandled ESC quits
         raw_events = pygame.event.get()
         clickables: list[Clickable] = [
             e for e in reversed(entities) if isinstance(e, Clickable)
@@ -145,71 +152,57 @@ def main() -> None:
             if event.type == pygame.QUIT:
                 running = False
                 break
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+
+            # Let every Clickable try to consume the event first.
+            consumed = any(c.handle_event(event) for c in clickables)
+
+            # Only quit on ESC if no Clickable wanted it.
+            if not consumed and event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
                 break
 
-            consumed = False
-            for clickable in clickables:
-                if clickable.handle_event(event):
-                    consumed = True
-                    break
+        if not running:
+            break
 
-            # Towers placed via menu: sync entities list
-            if not consumed and event.type == pygame.MOUSEBUTTONDOWN:
-                pass   # menu handles its own purchase; list rebuilt below
+        # 3. Update all entities with the shared world
+        for ent in entities:
+            ent.update(dt, world)
 
-        # Sync entity list whenever the towers dict changes
-        active_enemies: list[Enemy] = [e for e in entities if isinstance(e, Enemy) and e.alive]
-        all_tower_entities: list[NailGunner] = list(towers.values())
-        entities = _sorted_entities(
-            active_enemies + all_tower_entities + [menu]
-        )
-        # Re-attach clickables after sort
+        # 4. Flush kill bounties & enemy lifecycle
+        earned = world.flush_earnings()
+
+        patience_changed = False
+        for enemy in list(world.enemies):
+            if not enemy.alive:
+                if enemy.reached_end:
+                    world.economy.lose_patience()
+                    patience_changed = True
+                world.enemies.remove(enemy)
+
+        # 5. Rebuild entity list (towers dict may have changed via menu)
+        entities = _build_entity_list(world, menu)
         clickables = [e for e in reversed(entities) if isinstance(e, Clickable)]
 
-        # 3. Update
-        for ent in entities:
-            if isinstance(ent, NailGunner):
-                # Towers need the live enemy list
-                live_enemies = [e for e in entities if isinstance(e, Enemy) and e.alive]
-                ent.update_with_enemies(dt, live_enemies)
-            else:
-                ent.update(dt)
-
-        # Handle enemy lifecycle
-        for ent in list(entities):
-            if isinstance(ent, Enemy) and not ent.alive:
-                if ent.reached_end:
-                    economy.lose_patience()
-                # Spawn a fresh enemy for continuous demo
-                new_enemy = _make_enemy()
-                entities = _sorted_entities(
-                    [e for e in entities if e is not ent]
-                    + [new_enemy]
-                )
-
-        # Rebuild HUD on a throttle
+        # 6. HUD — throttled refresh + immediate on stat change
         hud_timer -= dt
-        if hud_timer <= 0.0:
+        budget_changed = world.economy.project_budget != prev_budget
+        if hud_timer <= 0.0 or budget_changed or patience_changed or earned > 0:
             hud_surfaces = _rebuild_hud()
             hud_timer = _HUD_REFRESH_INTERVAL
+            prev_budget = world.economy.project_budget
 
-        # 4. Render (back → front)
+        # 7. Render (back → front)
         screen.blit(static_layer, (0, 0))
-
         for ent in entities:
             ent.draw(screen)
 
-        # 5. HUD overlay (top-left)
+        # 8. HUD overlay (top-left)
         for i, surf in enumerate(hud_surfaces):
             screen.blit(surf, (_HUD_X, _HUD_Y + i * _HUD_LINE_H))
 
         pygame.display.flip()
 
-        # Game-over check
-        if economy.game_over:
-            # Phase 2: simply stop the loop (Phase 3 will show a screen)
+        if world.economy.game_over:
             running = False
 
     # ------------------------------------------------------------------

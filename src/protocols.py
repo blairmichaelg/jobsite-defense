@@ -1,24 +1,20 @@
 """Jobsite Defense — shared structural protocols.
 
-Defines the two core protocols used throughout the game:
+Phase 2.5 change
+----------------
+``Entity.update`` now takes a ``world: Any`` second argument so entities
+can read and write shared game state (enemy list, economy, etc.) without
+holding module-level references.  ``Any`` is used for the type annotation
+to avoid a circular import between ``protocols.py`` and ``world.py``;
+callers that need the concrete type import ``World`` directly from
+``src.world``.
 
-``Entity``
-    Every active game object (enemy, tower, projectile, boss).  Objects
-    are stored in a single ``list[Entity]`` sorted by ``layer`` and
-    iterated uniformly each frame.
-
-``Clickable``
-    Optional mixin for objects that consume mouse / keyboard events (e.g.
-    the radial build menu, future tower-info panels).  ``handle_event``
-    returns ``True`` when the event is consumed and should not propagate.
-
-Both protocols are ``@runtime_checkable`` so ``isinstance`` can gate
-debug tooling and test assertions without inheritance overhead.
+``Clickable`` is unchanged.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import pygame
 
@@ -40,12 +36,14 @@ class Entity(Protocol):
 
     layer: int
 
-    def update(self, dt: float) -> None:
+    def update(self, dt: float, world: Any) -> None:  # noqa: ANN401
         """Advance the entity's state by *dt* seconds.
 
         Args:
             dt: Delta-time in seconds since the previous frame.
                 Always clamped to ≤ 0.05 s by the game loop.
+            world: Shared ``World`` context (typed ``Any`` to avoid
+                circular imports; use ``isinstance`` or cast as needed).
         """
         ...
 

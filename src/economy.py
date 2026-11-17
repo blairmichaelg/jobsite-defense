@@ -1,15 +1,9 @@
 """Jobsite Defense — Economy manager.
 
-Tracks the two core Phase 2 resources:
-
-``project_budget``
-    Currency earned by completing waves and spent on towers.  Towers cost
-    money to place; future waves will award kill bounties.
-
-``client_patience``
-    Decrements by 1 each time an enemy exits via the final waypoint.
-    When it reaches 0 the player loses.  Think of it as the client's
-    remaining tolerance for delay before they fire the whole crew.
+Phase 2.5 addition
+------------------
+``earn(amount)`` credits the project budget.  Called by the main loop
+when a tower kills an enemy (via ``World.flush_earnings``).
 """
 
 from __future__ import annotations
@@ -30,7 +24,7 @@ class Economy:
     client_patience: int = 100
 
     # ------------------------------------------------------------------
-    # Spending
+    # Spending & earning
     # ------------------------------------------------------------------
 
     def can_afford(self, cost: int) -> bool:
@@ -56,12 +50,24 @@ class Economy:
         self.project_budget -= cost
         return True
 
+    def earn(self, amount: int) -> None:
+        """Credit *amount* dollars to the project budget.
+
+        Args:
+            amount: Dollars to add.  Must be ≥ 0.
+        """
+        if amount < 0:
+            raise ValueError(f"earn() amount must be non-negative, got {amount}")
+        self.project_budget += amount
+
     # ------------------------------------------------------------------
     # Patience
     # ------------------------------------------------------------------
 
     def lose_patience(self, amount: int = 1) -> None:
         """Decrement client patience when an enemy escapes.
+
+        Clamps to 0 — patience never goes negative.
 
         Args:
             amount: How many patience points to deduct (default 1).
