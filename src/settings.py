@@ -1,7 +1,14 @@
 """Jobsite Defense — global constants and configuration.
 
-All tunable values live here so the rest of the codebase can import a
-single module and stay in sync.  Nothing in this module has side effects.
+Phase 1.5 changes
+-----------------
+* Level geometry (``WAYPOINTS``, ``ROAD_CELLS``, ``POWERUP_TILES``) has
+  been moved to :mod:`src.level`.  ``settings.py`` now contains only
+  visual and engine constants with no side effects.
+* ``POWERUP_COLORS`` is kept here as the canonical colour map; it is
+  re-exported by :mod:`src.level` for convenience.
+
+Nothing in this module has side effects.
 """
 
 from __future__ import annotations
@@ -20,15 +27,15 @@ GRID_ROWS: int = 12
 """Number of rows in the grid."""
 
 WINDOW_WIDTH: int = CELL_SIZE * GRID_COLS   # 960
-"""Window width in pixels (derived from grid)."""
+"""Window width in pixels."""
 
 WINDOW_HEIGHT: int = CELL_SIZE * GRID_ROWS  # 720
-"""Window height in pixels (derived from grid)."""
+"""Window height in pixels."""
 
 TARGET_FPS: int = 60
 """Frame-rate cap for the game loop."""
 
-WINDOW_TITLE: str = "Jobsite Defense — Phase 1"
+WINDOW_TITLE: str = "Jobsite Defense — Phase 1.5"
 """Caption shown in the window title bar."""
 
 # ---------------------------------------------------------------------------
@@ -70,80 +77,12 @@ ENEMY_SPEED: float = 120.0
 """Default enemy speed in pixels per second."""
 
 # ---------------------------------------------------------------------------
-# Road layout — frozenset of (col, row)
-#
-# The path snakes across the grid:
-#   Enter from the left at row 1, go right, turn down, go left, turn
-#   down again, go right, and exit off the right edge.
+# Power-up colour map
 # ---------------------------------------------------------------------------
 
-WAYPOINTS: tuple[tuple[int, int], ...] = (
-    (0, 1),
-    (6, 1),
-    (6, 4),
-    (2, 4),
-    (2, 7),
-    (9, 7),
-    (9, 4),
-    (13, 4),
-    (13, 10),
-    (15, 10),
-)
-"""Ordered waypoints the enemy follows, as (col, row)."""
-
-
-def _build_road(waypoints: tuple[tuple[int, int], ...]) -> frozenset[tuple[int, int]]:
-    """Generate the full set of road cells by walking between waypoints.
-
-    Waypoints must be axis-aligned (share a row **or** a column).
-
-    Args:
-        waypoints: Ordered sequence of (col, row) turning points.
-
-    Returns:
-        A frozenset of every (col, row) on the road.
-    """
-    cells: set[tuple[int, int]] = set()
-    for i in range(len(waypoints) - 1):
-        c1, r1 = waypoints[i]
-        c2, r2 = waypoints[i + 1]
-        if r1 == r2:
-            # Horizontal segment
-            lo, hi = sorted((c1, c2))
-            for c in range(lo, hi + 1):
-                cells.add((c, r1))
-        elif c1 == c2:
-            # Vertical segment
-            lo, hi = sorted((r1, r2))
-            for r in range(lo, hi + 1):
-                cells.add((c1, r))
-        else:
-            raise ValueError(
-                f"Diagonal waypoint segment ({c1},{r1})→({c2},{r2}) is not supported."
-            )
-    return frozenset(cells)
-
-
-ROAD_CELLS: frozenset[tuple[int, int]] = _build_road(WAYPOINTS)
-"""Immutable set of all (col, row) cells that form the road."""
-
-# ---------------------------------------------------------------------------
-# Power-up tiles — {(col, row): (effect_name, multiplier)}
-# ---------------------------------------------------------------------------
-
-POWERUP_TILES: dict[tuple[int, int], tuple[str, float]] = {
-    (4, 0):  ("attack_speed", 1.25),   # Yeti Cooler — near first horizontal
-    (8, 3):  ("range", 1.25),          # Extension Cord — near middle turn
-    (11, 6): ("damage", 1.50),         # Heavy Air Compressor — near lower path
-    (1, 6):  ("attack_speed", 1.25),   # Yeti Cooler — left side
-    (14, 9): ("range", 1.25),          # Extension Cord — near exit
-}
-"""Static power-up tile placements for the Phase 1 test level."""
-
-# Mapping from effect name → display color
 POWERUP_COLORS: dict[str, tuple[int, int, int]] = {
     "attack_speed": COLOR_YETI_COOLER,
-    "damage": COLOR_COMPRESSOR,
-    "range": COLOR_EXTENSION_CORD,
+    "damage":       COLOR_COMPRESSOR,
+    "range":        COLOR_EXTENSION_CORD,
 }
-"""Color lookup for power-up tile rendering."""
+"""Colour lookup for power-up tile rendering."""
