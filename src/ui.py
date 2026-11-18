@@ -1,20 +1,21 @@
 """Jobsite Defense — Radial Build Menu.
 
-Phase 3 changes
+Phase 4 changes
 ---------------
-* Contextual UI:
-  - Empty cell: "Nail Gunner ($500)" at 90° and "Concrete Pump ($750)" at 270°.
-  - Occupied cell: "Sell (Refund $X)" and placeholder "Upgrade".
-* Uses ``world.try_build()`` and ``world.sell_tower()`` rather than mutating towers directly.
-* Row-0 and Row-1 flip logic: checks ``candidate_y - _BUTTON_RADIUS < 0`` so buttons
-  do not clip the top window boundary on rows 0 and 1.
-* Disables unaffordable purchase/upgrade buttons (rendered in grey, click ignored).
-* Real typing on ``update(dt, world: World)`` satisfying the ``Entity`` protocol.
+* Safe Menu Layout: ``_place()`` uses ``_ANGLES`` and strictly clamps all button
+  centers between ``[_BUTTON_RADIUS, WINDOW_HEIGHT - _BUTTON_RADIUS]`` and
+  ``[_BUTTON_RADIUS, WINDOW_WIDTH - _BUTTON_RADIUS]``.
+* Upgrades in RadialMenu:
+  - Occupied cell shows "Sell" (refunding 70% of invested capital) and the
+    named next upgrade tier with its precise cost.
+  - Clicks invoke ``world.try_upgrade_tower()``.
+  - Unaffordable upgrades are disabled (greyed out and unclickable).
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -50,6 +51,7 @@ _COLOR_BUTTON_REFUND: tuple[int, int, int] = (100, 200, 255)
 
 _BUTTON_RADIUS: int = 36       # pixel radius of each radial button
 _ORBIT_RADIUS: int = 70        # distance from menu centre to button centre
+_ANGLES: tuple[float, float] = (90.0, 270.0)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ class _MenuButton:
 
 @dataclass
 class RadialMenu:
-    """Contextual radial build and management menu.
+    """Contextual radial build, upgrade, and liquidation menu.
 
     Satisfies ``Entity`` (layer 90) and ``Clickable``.
     """
@@ -93,8 +95,8 @@ class RadialMenu:
     def configure(self, world: World) -> None:
         """Inject shared world dependency."""
         self._world = world
-        self._font_label = pygame.font.Font(None, 16)
-        self._font_cost = pygame.font.Font(None, 15)
+        self._font_label = pygame.font.Font(None, 15)
+        self._font_cost = pygame.font.Font(None, 14)
 
     # ------------------------------------------------------------------
     # Entity Protocol
@@ -121,7 +123,7 @@ class RadialMenu:
                 else True
             )
 
-            # Draw circle background
+            # Circle background
             overlay = pygame.Surface(
                 (_BUTTON_RADIUS * 2, _BUTTON_RADIUS * 2), pygame.SRCALPHA
             )
@@ -202,7 +204,7 @@ class RadialMenu:
                                 and btn.cost > 0
                                 and not self._world.economy.can_afford(btn.cost)
                             ):
-                                return True  # Unaffordable: consumed but ignored
+                                return True  # Unaffordable: consumed without action
                             self._execute_action(btn)
                             self.open = False
                             return True
@@ -238,50 +240,70 @@ class RadialMenu:
         self.open = True
         return True
 
-    def _build_buttons(self) -> None:
-        """Construct contextual buttons with row-0/row-1 clipping prevention."""
-        self._buttons = []
-        if self._world is None:
-            return
+    def _place(
+        self, options: Sequence[tuple[str, int, str, str | None]]
+    ) -> list[_MenuButton]:
+        """Compute button placements using _ANGLES with strict boundary clamping.
 
-        # Pre-check if 270° button clips off top of screen (row 0 or row 1)
-        test_y = self._menu_center.y + math.sin(math.radians(270.0)) * _ORBIT_RADIUS
-        top_clipped = (test_y - _BUTTON_RADIUS) < 0
+        Clamps centers to [_BUTTON_RADIUS, WINDOW_HEIGHT - _BUTTON_RADIUS] and
+        [_BUTTON_RADIUS, WINDOW_WIDTH - _BUTTON_RADIUS] so no button is cut off.
+        """
+        buttons: list[_MenuButton] = []
+        for i, (label, cost, action, subtext) in enumerate(options):
+            angle = _ANGLES[i % len(_ANGLES)]
+            rad = math.radians(angle)
+            raw_x = self._menu_center.x + math.cos(rad) * _ORBIT_RADIUS
+            raw_y = self._menu_center.y + math.sin(rad) * _ORBIT_RADIUS
 
-        if self._is_occupied:
-            tower = self._world.towers[self._cell]
-            refund = int(tower.cost * 0.7)
-            options = [
-                ("Sell", 0, "sell", 90.0, f"+${refund}"),
-                ("Upgrade", 500, "upgrade", 270.0, None),
-            ]
-        else:
-            options = [
-                ("Nail Gunner", NAIL_GUNNER_COST, "nail_gunner", 90.0, None),
-                ("Concrete Pump", CONCRETE_PUMP_COST, "concrete_pump", 270.0, None),
-            ]
-
-        for label, cost, action, base_angle, subtext in options:
-            angle = base_angle
-            if top_clipped:
-                # If top would be clipped on row 0/1, flip angles downwards
-                angle = 45.0 if base_angle == 90.0 else 135.0
-
-            angle_rad = math.radians(angle)
-            center = pygame.Vector2(
-                self._menu_center.x + math.cos(angle_rad) * _ORBIT_RADIUS,
-                self._menu_center.y + math.sin(angle_rad) * _ORBIT_RADIUS,
+            # Strict boundary clamping
+            clamped_x = max(
+                float(_BUTTON_RADIUS), min(float(WINDOW_WIDTH - _BUTTON_RADIUS), raw_x)
             )
-            self._buttons.append(
+            clamped_y = max(
+                float(_BUTTON_RADIUS), min(float(WINDOW_HEIGHT - _BUTTON_RADIUS), raw_y)
+            )
+
+            buttons.append(
                 _MenuButton(
                     label=label,
                     cost=cost,
                     action=action,
                     angle_deg=angle,
-                    center=center,
+                    center=pygame.Vector2(clamped_x, clamped_y),
                     subtext=subtext,
                 )
             )
+        return buttons
+
+    def _build_buttons(self) -> None:
+        """Construct contextual buttons using _place()."""
+        self._buttons = []
+        if self._world is None:
+            return
+
+        if self._is_occupied:
+            tower = self._world.towers[self._cell]
+            refund = int(tower.invested * 0.7)
+            up_cost = tower.next_upgrade_cost
+            up_name = tower.next_upgrade_name
+
+            upgrade_tuple: tuple[str, int, str, str | None]
+            if up_cost is not None and up_name is not None:
+                upgrade_tuple = (up_name, up_cost, "upgrade", None)
+            else:
+                upgrade_tuple = ("Max Tier", 0, "upgrade", "MAX")
+
+            options = [
+                ("Sell", 0, "sell", f"+${refund}"),
+                upgrade_tuple,
+            ]
+        else:
+            options = [
+                ("Nail Gunner", NAIL_GUNNER_COST, "nail_gunner", None),
+                ("Concrete Pump", CONCRETE_PUMP_COST, "concrete_pump", None),
+            ]
+
+        self._buttons = self._place(options)
 
     def _execute_action(self, btn: _MenuButton) -> None:
         """Dispatch action to the World manager."""
@@ -292,7 +314,7 @@ class RadialMenu:
         if btn.action == "sell":
             self._world.sell_tower(col, row)
         elif btn.action == "upgrade":
-            pass  # Placeholder
+            self._world.try_upgrade_tower(col, row)
         else:
             self._world.try_build(col, row, btn.cost, btn.action)
 

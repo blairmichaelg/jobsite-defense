@@ -1,20 +1,17 @@
 """Jobsite Defense — main entry point and game loop.
 
-Phase 3 changes
+Phase 4 changes
 ---------------
-* Restored ``WINDOW_HEIGHT`` import for display initialization.
-* Integrated ``WaveManager`` to drive enemy spawning, lifecycle, and breathers.
-* Removed hardcoded demo enemy — ``World.enemies`` is populated by waves.
-* Integrated ``world.projectiles`` into update, render, and in-place culling passes.
-* In-place list slicing for enemy culling:
-  ``world.enemies[:] = [e for e in world.enemies if e.alive]``.
-* Removed redundant ``clickables`` rebuild after entity list refresh.
-* Contextual radial menu wired to ``World`` actions.
+* Added ``GameState`` enum (``PLAYING``, ``GAME_OVER``, ``VICTORY``).
+* End-state overlays: "YOU'RE FIRED!" on patience depletion;
+  "CONTRACT COMPLETE!" on wave campaign completion.
+* Clean termination on ESC without invoking ``sys.exit()``.
+* Leaked enemies deduct archetype-specific ``enemy.patience_cost`` (20 for OSHA boss).
 """
 
 from __future__ import annotations
 
-import sys
+from enum import Enum
 
 import pygame
 
@@ -28,12 +25,21 @@ from src.settings import (
     WINDOW_WIDTH,
 )
 from src.ui import RadialMenu
-from src.wave import WaveManager
+from src.wave import WaveManager, WaveState
 from src.world import World
 
 # ---------------------------------------------------------------------------
-# Constants
+# Enums & Constants
 # ---------------------------------------------------------------------------
+
+
+class GameState(Enum):
+    """Overall gameplay session state."""
+
+    PLAYING = "PLAYING"
+    GAME_OVER = "GAME_OVER"
+    VICTORY = "VICTORY"
+
 
 _DT_MAX: float = 0.05
 _HUD_REFRESH_INTERVAL: float = 0.5
@@ -51,19 +57,11 @@ _PATIENCE_LOW_THRESHOLD: int = 25
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _build_entity_list(
     world: World, menu: RadialMenu, wave_manager: WaveManager
 ) -> list[Entity]:
-    """Return entities sorted by layer from live world state.
-
-    Collects alive enemies, active projectiles, placed towers, the radial
-    menu, and the wave manager.
-
-    Args:
-        world: Shared game state.
-        menu: The persistent radial-menu singleton.
-        wave_manager: The wave progression manager.
-    """
+    """Return entities sorted by layer from live world state."""
     alive_enemies: list[Entity] = [e for e in world.enemies if e.alive]
     alive_projectiles: list[Entity] = [p for p in world.projectiles if p.alive]
     towers: list[Entity] = list(world.towers.values())
@@ -77,8 +75,9 @@ def _build_entity_list(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
-    """Run the Jobsite Defense Phase 3 game loop."""
+    """Run the Jobsite Defense Phase 4 game loop."""
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
@@ -94,18 +93,21 @@ def main() -> None:
 
     label_font = pygame.font.Font(None, 20)
     hud_font = pygame.font.Font(None, 22)
+    banner_font = pygame.font.Font(None, 56)
+    sub_banner_font = pygame.font.Font(None, 26)
 
     static_layer = build_static_layer(label_font)
 
     # --- World & Systems -------------------------------------------------
     world = World(economy=Economy())
     wave_manager = WaveManager()
+    game_state = GameState.PLAYING
 
     # --- Radial menu (Clickable UI) --------------------------------------
     menu = RadialMenu()
     menu.configure(world)
 
-    # --- Entity list (rebuilt after each mutation) -----------------------
+    # --- Entity list -----------------------------------------------------
     entities: list[Entity] = _build_entity_list(world, menu, wave_manager)
 
     # --- HUD cache -------------------------------------------------------
@@ -157,27 +159,35 @@ def main() -> None:
         if not running:
             break
 
-        # 3. Update all entities with the shared world
-        for ent in entities:
-            ent.update(dt, world)
-
-        # 4. Flush kill bounties & lifecycle culling
-        earned = world.flush_earnings()
-
+        # 3. Simulation (only if actively playing)
+        earned = 0
         patience_changed = False
-        for enemy in world.enemies:
-            if not enemy.alive and enemy.reached_end:
-                world.economy.lose_patience()
-                patience_changed = True
 
-        # In-place slice cull for dead entities
-        world.enemies[:] = [e for e in world.enemies if e.alive]
-        world.projectiles[:] = [p for p in world.projectiles if p.alive]
+        if game_state == GameState.PLAYING:
+            for ent in entities:
+                ent.update(dt, world)
 
-        # 5. Rebuild entity list (spawns, deaths, purchases)
+            earned = world.flush_earnings()
+
+            for enemy in world.enemies:
+                if not enemy.alive and enemy.reached_end:
+                    world.economy.lose_patience(enemy.patience_cost)
+                    patience_changed = True
+
+            # In-place slice cull
+            world.enemies[:] = [e for e in world.enemies if e.alive]
+            world.projectiles[:] = [p for p in world.projectiles if p.alive]
+
+            # Check game-over / victory conditions
+            if world.economy.game_over:
+                game_state = GameState.GAME_OVER
+            elif wave_manager.state == WaveState.VICTORY and not world.enemies:
+                game_state = GameState.VICTORY
+
+        # 4. Rebuild entity list
         entities = _build_entity_list(world, menu, wave_manager)
 
-        # 6. HUD — throttled refresh + immediate on stat change
+        # 5. HUD — throttled refresh + immediate on stat change
         hud_timer -= dt
         budget_changed = world.economy.project_budget != prev_budget
         if hud_timer <= 0.0 or budget_changed or patience_changed or earned > 0:
@@ -185,25 +195,52 @@ def main() -> None:
             hud_timer = _HUD_REFRESH_INTERVAL
             prev_budget = world.economy.project_budget
 
-        # 7. Render (back → front)
+        # 6. Render (back → front)
         screen.blit(static_layer, (0, 0))
         for ent in entities:
             ent.draw(screen)
 
-        # 8. HUD overlay (top-left)
+        # 7. HUD overlay (top-left)
         for i, surf in enumerate(hud_surfaces):
             screen.blit(surf, (_HUD_X, _HUD_Y + i * _HUD_LINE_H))
 
+        # 8. End-state Banners
+        if game_state == GameState.GAME_OVER:
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((30, 0, 0, 190))
+            screen.blit(overlay, (0, 0))
+
+            title = banner_font.render("YOU'RE FIRED!", True, (240, 60, 60))
+            screen.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 25)))
+
+            sub = sub_banner_font.render(
+                "The client ran out of patience. (Press ESC to exit)",
+                True,
+                (220, 200, 200),
+            )
+            screen.blit(sub, sub.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 25)))
+
+        elif game_state == GameState.VICTORY:
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 30, 0, 190))
+            screen.blit(overlay, (0, 0))
+
+            title = banner_font.render("CONTRACT COMPLETE!", True, (80, 230, 80))
+            screen.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 25)))
+
+            sub = sub_banner_font.render(
+                "Jobsite defended on schedule and under budget! (Press ESC to exit)",
+                True,
+                (200, 240, 200),
+            )
+            screen.blit(sub, sub.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 25)))
+
         pygame.display.flip()
 
-        if world.economy.game_over:
-            running = False
-
     # ------------------------------------------------------------------
-    # Shutdown
+    # Clean Shutdown without sys.exit()
     # ------------------------------------------------------------------
     pygame.quit()
-    sys.exit()
 
 
 if __name__ == "__main__":

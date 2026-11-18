@@ -1,11 +1,10 @@
 """Jobsite Defense — projectile entities and splash mechanics.
 
-Phase 3 implementation
-----------------------
-* ``ConcreteGlob``: AoE splash projectile fired by ``ConcretePump``.
-  Flies toward a target coordinate, detonates upon arrival, damages all
-  enemies within a 1.5-cell radius, applies a 50% slow (3s), and awards
-  bounties on lethal hits.
+Phase 4 changes
+---------------
+* ``ConcreteGlob`` accepts dynamic ``splash_radius`` and ``slow_multiplier`` to support
+  ConcretePump Tier 2 ("Quick-Dry", 0.2x slow) and Tier 3 ("Cement Truck", 2x splash radius).
+* Detonation invokes ``enemy.apply_speed_modifier(mult, dur)`` respecting stacking rules.
 """
 
 from __future__ import annotations
@@ -15,7 +14,6 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from src.enemy import SpeedModifier
 from src.settings import (
     CONCRETE_GLOB_SPEED,
     CONCRETE_PUMP_DAMAGE,
@@ -37,7 +35,9 @@ class ConcreteGlob:
         target_pos: Destination coordinate where the glob detonates.
         speed: Flight speed in pixels per second.
         damage: Splash damage dealt to all caught in detonation.
-        splash_radius: Detonation radius in pixels (1.5 cells).
+        splash_radius: Detonation radius in pixels (1.5 cells standard).
+        slow_multiplier: Speed factor applied to enemies in splash (0.5 standard; 0.2 Quick-Dry).
+        slow_duration: Seconds the slow debuff lasts.
         alive: Becomes ``False`` upon detonation; culled by the game loop.
         layer: Render/update layer — projectiles sit at layer 30.
     """
@@ -47,6 +47,8 @@ class ConcreteGlob:
     speed: float = CONCRETE_GLOB_SPEED
     damage: float = CONCRETE_PUMP_DAMAGE
     splash_radius: float = CONCRETE_SPLASH_RADIUS
+    slow_multiplier: float = 0.5
+    slow_duration: float = 3.0
     alive: bool = True
     layer: int = 30
     _splash_radius_sq: float = field(init=False)
@@ -89,7 +91,7 @@ class ConcreteGlob:
             if self.pos.distance_squared_to(enemy.pos) <= self._splash_radius_sq:
                 was_alive = enemy.alive
                 enemy.take_damage(self.damage)
-                enemy.modifiers["speed"] = SpeedModifier(multiplier=0.5, duration=3.0)
+                enemy.apply_speed_modifier(mult=self.slow_multiplier, dur=self.slow_duration)
 
                 if was_alive and not enemy.alive:
                     world.request_earn(enemy.bounty)

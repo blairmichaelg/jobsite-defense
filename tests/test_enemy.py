@@ -1,16 +1,25 @@
 """Tests for src/enemy.py — movement correctness, archetypes, status modifiers, and flags.
 
-SDL dummy drivers are configured globally in ``conftest.py``; no
-``os.environ`` setup is needed here.
+SDL dummy drivers are configured globally in ``conftest.py``.
 """
 
 from __future__ import annotations
 
 import pygame
+import pytest
 
-from src.enemy import Enemy, HOABoardMember, Rotted2x4, SpeedModifier
+from src.economy import Economy
+from src.enemy import Enemy, HOABoardMember, OshaInspector, RainCloud, Rotted2x4, SpeedModifier
 from src.level import WAYPOINT_PIXELS
-from src.settings import ENEMY_SPEED
+from src.settings import (
+    ENEMY_SPEED,
+    OSHA_INSPECTOR_HEALTH,
+    OSHA_INSPECTOR_PATIENCE,
+    OSHA_INSPECTOR_SPEED,
+    RAIN_CLOUD_HEALTH,
+    RAIN_CLOUD_SPEED,
+)
+from src.tower import NailGunner
 from src.world import World
 
 _DUMMY_WORLD = World()
@@ -31,15 +40,7 @@ def _total_path_length() -> float:
 
 
 def _simulate_full_run(speed: float = ENEMY_SPEED, dt: float = 1 / 60) -> Enemy:
-    """Simulate an enemy completing the entire path and return it.
-
-    Args:
-        speed: Pixels per second.
-        dt: Fixed time-step per tick (seconds).
-
-    Returns:
-        The enemy after it finishes (or times out at 10 000 ticks).
-    """
+    """Simulate an enemy completing the entire path and return it."""
     enemy = Enemy(speed=speed)
     for _ in range(10_000):
         enemy.update(dt, _DUMMY_WORLD)
@@ -49,7 +50,7 @@ def _simulate_full_run(speed: float = ENEMY_SPEED, dt: float = 1 / 60) -> Enemy:
 
 
 # ---------------------------------------------------------------------------
-# State flags
+# State flags & Movement
 # ---------------------------------------------------------------------------
 
 
@@ -76,11 +77,6 @@ class TestEnemyFlags:
         assert e.pos == pos_before
 
 
-# ---------------------------------------------------------------------------
-# Movement correctness
-# ---------------------------------------------------------------------------
-
-
 class TestEnemyMovement:
     """Validate path-following accuracy."""
 
@@ -97,29 +93,20 @@ class TestEnemyMovement:
         pos_at_death = pygame.Vector2(e.pos)
         for _ in range(60):
             e.update(1 / 60, _DUMMY_WORLD)
-        assert e.pos == pos_at_death, "Enemy moved after reaching end (looping bug)"
+        assert e.pos == pos_at_death
 
     def test_large_dt_completes_cleanly(self) -> None:
-        """With a 2-second dt the enemy must finish with correct end states.
-
-        Verifies:
-        * ``e.reached_end is True``
-        * ``e.alive is False``
-        * ``e.pos`` equals the last waypoint pixel centre.
-        """
+        """With a 2-second dt the enemy must finish with correct end states."""
         e = Enemy()
         for _ in range(50):
-            e.update(2.0, _DUMMY_WORLD)   # deliberately un-clamped to stress leftover logic
+            e.update(2.0, _DUMMY_WORLD)
             if not e.alive:
                 break
 
-        assert e.reached_end is True, "Enemy did not set reached_end after large-dt run"
-        assert e.alive is False, "Enemy still marked alive after reaching end"
+        assert e.reached_end is True
+        assert e.alive is False
         last_wx, last_wy = WAYPOINT_PIXELS[-1]
-        expected = pygame.Vector2(last_wx, last_wy)
-        assert e.pos == expected, (
-            f"Enemy pos {e.pos!r} does not match exit waypoint {expected!r}"
-        )
+        assert e.pos == pygame.Vector2(last_wx, last_wy)
 
     def test_distance_travelled_is_plausible(self) -> None:
         """Total distance the enemy covers must be close to the path length."""
@@ -131,9 +118,7 @@ class TestEnemyMovement:
             e.update(1 / 60, _DUMMY_WORLD)
             if not e.alive:
                 break
-        assert e.reached_end is True, (
-            f"Enemy did not finish after {_ticks} ticks (path_len={path_len:.1f}px)"
-        )
+        assert e.reached_end is True
 
     def test_spawn_position_matches_first_waypoint(self) -> None:
         """A fresh enemy must spawn at WAYPOINT_PIXELS[0]."""
@@ -147,18 +132,74 @@ class TestEnemyMovement:
         e = Enemy()
         for _ in range(240):
             e.update(1 / 60, _DUMMY_WORLD)
-        assert e.waypoint_index > 1 or not e.alive, (
-            "Enemy did not advance past the first waypoint after 4 s"
-        )
+        assert e.waypoint_index > 1 or not e.alive
 
 
 # ---------------------------------------------------------------------------
-# Archetypes & Status Effects
+# Prediction & Speed Modifiers
 # ---------------------------------------------------------------------------
 
 
-class TestEnemyArchetypes:
-    """Validate Phase 3 enemy subclasses and status modifiers."""
+class TestPredictionAndModifiers:
+    """Validate position prediction (target leading) and debuff stacking."""
+
+    def test_predict_pos_straight_segment(self) -> None:
+        """Predicting 1s ahead moves by speed * 1.0 along the first horizontal segment."""
+        e = Enemy(speed=100.0)
+        # First segment is from (-60, 90) to (390, 90)
+        predicted = e.predict_pos(1.0)
+        assert predicted.x == pytest.approx(e.pos.x + 100.0)
+        assert predicted.y == pytest.approx(e.pos.y)
+
+    def test_predict_pos_accounts_for_speed_modifier(self) -> None:
+        """Predicting with a 0.5x speed modifier projects half the distance."""
+        e = Enemy(speed=100.0)
+        e.modifiers["speed"] = SpeedModifier(multiplier=0.5, duration=5.0)
+        predicted = e.predict_pos(1.0)
+        assert predicted.x == pytest.approx(e.pos.x + 50.0)
+
+    def test_predict_pos_caps_at_end_of_path(self) -> None:
+        """Predicting with a huge time lead returns the final waypoint position."""
+        e = Enemy(speed=100.0)
+        predicted = e.predict_pos(100.0)
+        last_wx, last_wy = WAYPOINT_PIXELS[-1]
+        assert predicted == pygame.Vector2(last_wx, last_wy)
+
+    def test_apply_speed_modifier_overwrites_if_stronger(self) -> None:
+        """A 0.2x debuff overwrites an existing 0.5x debuff."""
+        e = Enemy()
+        e.apply_speed_modifier(mult=0.5, dur=3.0)
+        assert e.modifiers["speed"].multiplier == 0.5
+
+        e.apply_speed_modifier(mult=0.2, dur=2.0)
+        assert e.modifiers["speed"].multiplier == 0.2
+        assert e.modifiers["speed"].duration == 2.0
+
+    def test_apply_speed_modifier_takes_max_duration_if_equal(self) -> None:
+        """Applying the same multiplier extends the duration to max(current, dur)."""
+        e = Enemy()
+        e.apply_speed_modifier(mult=0.5, dur=4.0)
+        e.apply_speed_modifier(mult=0.5, dur=2.0)
+        assert e.modifiers["speed"].duration == 4.0
+
+        e.apply_speed_modifier(mult=0.5, dur=6.0)
+        assert e.modifiers["speed"].duration == 6.0
+
+    def test_apply_speed_modifier_ignores_weaker(self) -> None:
+        """A weaker 0.8x debuff does not replace an active 0.5x debuff."""
+        e = Enemy()
+        e.apply_speed_modifier(mult=0.5, dur=3.0)
+        e.apply_speed_modifier(mult=0.8, dur=5.0)
+        assert e.modifiers["speed"].multiplier == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Archetypes: RainCloud & OSHA Inspector
+# ---------------------------------------------------------------------------
+
+
+class TestPhase4Archetypes:
+    """Validate RainCloud flyer, OSHA Inspector boss, and base archetypes."""
 
     def test_rotted_2x4_stats(self) -> None:
         """Rotted2x4 has standard 100 HP, 120 px/s, and $15 bounty."""
@@ -174,35 +215,68 @@ class TestEnemyArchetypes:
         assert e.speed == 180.0
         assert e.bounty == 5
 
-    def test_speed_modifier_slows_movement(self) -> None:
-        """Applying a 0.5x SpeedModifier halves the distance covered per update."""
-        e_normal = Rotted2x4()
-        e_slow = Rotted2x4()
-        e_slow.modifiers["speed"] = SpeedModifier(multiplier=0.5, duration=3.0)
+    def test_rain_cloud_flight_and_prediction(self) -> None:
+        """RainCloud flies in a straight line toward exit waypoint."""
+        cloud = RainCloud()
+        assert cloud.is_flying is True
+        assert cloud.health == RAIN_CLOUD_HEALTH
+        assert cloud.speed == RAIN_CLOUD_SPEED
 
-        dt = 0.05
-        e_normal.update(dt, _DUMMY_WORLD)
-        e_slow.update(dt, _DUMMY_WORLD)
+        # Starts at (-100, 100)
+        assert cloud.pos == pygame.Vector2(-100.0, 100.0)
 
-        # Distance moved from spawn waypoint
-        start = pygame.Vector2(*WAYPOINT_PIXELS[0])
-        dist_normal = e_normal.pos.distance_to(start)
-        dist_slow = e_slow.pos.distance_to(start)
+        # Predict pos moves straight toward exit
+        target = pygame.Vector2(*WAYPOINT_PIXELS[-1])
+        lead_pos = cloud.predict_pos(1.0)
+        step = RAIN_CLOUD_SPEED * 1.0
+        expected = cloud.pos.move_towards(target, step)
+        assert lead_pos == expected
 
-        assert abs(dist_slow - dist_normal * 0.5) < 0.01
+    def test_osha_inspector_stats(self) -> None:
+        """OSHA Inspector has 2500 HP, 40 px/s, and costs 20 patience."""
+        boss = OshaInspector()
+        assert boss.health == OSHA_INSPECTOR_HEALTH
+        assert boss.speed == OSHA_INSPECTOR_SPEED
+        assert boss.patience_cost == OSHA_INSPECTOR_PATIENCE
 
-    def test_speed_modifier_expires_after_duration(self) -> None:
-        """Modifier expires when duration drops to zero, restoring full speed."""
-        e = Rotted2x4()
-        e.modifiers["speed"] = SpeedModifier(multiplier=0.5, duration=0.1)
+    def test_osha_stop_work_aura_disables_nearby_towers(self) -> None:
+        """Towers within 150px of OSHA Inspector become disabled; outside ones stay enabled."""
+        boss = OshaInspector(pos=pygame.Vector2(200, 200))
 
-        # Step 0.06s (less than 0.1s -> modifier remains)
-        e.update(0.06, _DUMMY_WORLD)
-        assert "speed" in e.modifiers
+        # Close tower (50px away < 150px)
+        t_near = NailGunner(col=3, row=3)
+        t_near.center = pygame.Vector2(250, 200)
 
-        # Step another 0.06s (total 0.12s -> modifier expired)
-        e.update(0.06, _DUMMY_WORLD)
-        assert "speed" not in e.modifiers
+        # Far tower (300px away > 150px)
+        t_far = NailGunner(col=8, row=8)
+        t_far.center = pygame.Vector2(500, 200)
+
+        world = World(
+            enemies=[boss],
+            towers={(3, 3): t_near, (8, 8): t_far},
+            economy=Economy(),
+        )
+
+        boss.update(0.01, world)
+
+        assert t_near.is_disabled is True
+        assert t_far.is_disabled is False
+
+    def test_osha_aura_re_enables_when_boss_moves_away(self) -> None:
+        """When OSHA inspector moves away from a tower, the tower becomes enabled again."""
+        boss = OshaInspector(pos=pygame.Vector2(200, 200))
+        tower = NailGunner(col=3, row=3)
+        tower.center = pygame.Vector2(250, 200)
+        world = World(enemies=[boss], towers={(3, 3): tower})
+
+        # Close -> disabled
+        boss.update(0.01, world)
+        assert tower.is_disabled is True
+
+        # Boss moves far away
+        boss.pos = pygame.Vector2(800, 800)
+        boss.update(0.01, world)
+        assert tower.is_disabled is False
 
 
 # ---------------------------------------------------------------------------
@@ -216,8 +290,9 @@ class TestEnemyProtocol:
     def test_entity_isinstance(self) -> None:
         """``isinstance(enemy, Entity)`` must return True."""
         from src.protocols import Entity
+
         e = Enemy()
-        assert isinstance(e, Entity), "Enemy does not satisfy the Entity protocol"
+        assert isinstance(e, Entity)
 
     def test_has_layer_attribute(self) -> None:
         """Enemy must expose a ``layer`` integer attribute."""

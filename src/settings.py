@@ -32,7 +32,7 @@ WINDOW_HEIGHT: int = CELL_SIZE * GRID_ROWS  # 720
 TARGET_FPS: int = 60
 """Frame-rate cap for the game loop."""
 
-WINDOW_TITLE: str = "Jobsite Defense — Phase 3"
+WINDOW_TITLE: str = "Jobsite Defense — Phase 4"
 """Caption shown in the window title bar."""
 
 # ---------------------------------------------------------------------------
@@ -60,6 +60,18 @@ COLOR_HOA: tuple[int, int, int] = (190, 70, 200)
 COLOR_HOA_OUTLINE: tuple[int, int, int] = (120, 35, 130)
 """Darker outline ring for the HOA Board Member."""
 
+COLOR_OSHA: tuple[int, int, int] = (240, 200, 30)
+"""Safety-yellow circle for the OSHA Inspector Boss."""
+
+COLOR_OSHA_OUTLINE: tuple[int, int, int] = (160, 130, 15)
+"""Darker outline for the OSHA Inspector Boss."""
+
+COLOR_RAIN_CLOUD: tuple[int, int, int] = (160, 175, 195)
+"""Overcast blue-grey for flying RainCloud hazard."""
+
+COLOR_RAIN_CLOUD_OUTLINE: tuple[int, int, int] = (110, 125, 145)
+"""Outline for flying RainCloud."""
+
 COLOR_YETI_COOLER: tuple[int, int, int] = (100, 180, 255)
 """Blue tint for the Yeti Cooler attack-speed tile."""
 
@@ -83,6 +95,34 @@ ENEMY_MAX_HEALTH: float = 100.0
 """Default starting health for a Rotted 2×4 enemy."""
 
 # ---------------------------------------------------------------------------
+# Enemy Archetypes — Phase 4
+# ---------------------------------------------------------------------------
+
+OSHA_INSPECTOR_HEALTH: float = 2500.0
+"""Hit points for OSHA Inspector Boss."""
+
+OSHA_INSPECTOR_SPEED: float = 40.0
+"""Pixels per second for OSHA Inspector Boss."""
+
+OSHA_INSPECTOR_BOUNTY: int = 100
+"""Dollars awarded on destroying the OSHA Inspector."""
+
+OSHA_INSPECTOR_PATIENCE: int = 20
+"""Client patience lost if OSHA Inspector reaches the end."""
+
+OSHA_AURA_RADIUS: float = 2.5 * CELL_SIZE  # 150 px
+"""Radius of the Stop-Work Order disabling aura."""
+
+RAIN_CLOUD_HEALTH: float = 60.0
+"""Hit points for flying RainCloud hazard."""
+
+RAIN_CLOUD_SPEED: float = 80.0
+"""Pixels per second for flying RainCloud hazard."""
+
+RAIN_CLOUD_BOUNTY: int = 20
+"""Dollars awarded on dispersing a RainCloud."""
+
+# ---------------------------------------------------------------------------
 # Tower — Nail Gunner base stats
 # ---------------------------------------------------------------------------
 
@@ -97,6 +137,12 @@ NAIL_GUNNER_COOLDOWN: float = 0.8
 
 NAIL_GUNNER_DAMAGE: float = 25.0
 """Hit-scan damage per nail."""
+
+NAIL_GUNNER_TIER2_COST: int = 300
+"""Upgrade cost for Tier 2: Pneumatic Overdrive."""
+
+NAIL_GUNNER_TIER3_COST: int = 800
+"""Upgrade cost for Tier 3: The Scaffold."""
 
 # ---------------------------------------------------------------------------
 # Tower — Concrete Pump base stats
@@ -119,6 +165,12 @@ CONCRETE_GLOB_SPEED: float = 250.0
 
 CONCRETE_SPLASH_RADIUS: float = 1.5 * CELL_SIZE  # 90 px
 """Detonation splash radius in pixels (1.5 grid cells)."""
+
+CONCRETE_PUMP_TIER2_COST: int = 450
+"""Upgrade cost for Tier 2: Quick-Dry."""
+
+CONCRETE_PUMP_TIER3_COST: int = 1000
+"""Upgrade cost for Tier 3: Cement Truck."""
 
 # ---------------------------------------------------------------------------
 # Power-up colour map

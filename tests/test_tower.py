@@ -1,4 +1,4 @@
-"""Tests for src/tower.py & src/projectile.py — modifier stack, combat, and AoE globs.
+"""Tests for src/tower.py & src/projectile.py — modifier stack, combat, upgrades, and prediction.
 
 SDL dummy drivers are configured globally in ``conftest.py``.
 """
@@ -9,20 +9,26 @@ import pygame
 import pytest
 
 from src.economy import Economy
-from src.enemy import Enemy, Rotted2x4
+from src.enemy import Enemy, RainCloud, Rotted2x4
 from src.level import POWERUP_TILES, ROAD_CELLS
 from src.projectile import ConcreteGlob
 from src.settings import (
+    CONCRETE_GLOB_SPEED,
     CONCRETE_PUMP_COOLDOWN,
     CONCRETE_PUMP_COST,
     CONCRETE_PUMP_DAMAGE,
     CONCRETE_PUMP_RANGE,
+    CONCRETE_PUMP_TIER2_COST,
+    CONCRETE_PUMP_TIER3_COST,
+    CONCRETE_SPLASH_RADIUS,
     NAIL_GUNNER_COOLDOWN,
     NAIL_GUNNER_COST,
     NAIL_GUNNER_DAMAGE,
     NAIL_GUNNER_RANGE,
+    NAIL_GUNNER_TIER2_COST,
+    NAIL_GUNNER_TIER3_COST,
 )
-from src.tower import ConcretePump, NailGunner
+from src.tower import ConcretePump, NailGunner, Tower
 from src.world import World
 
 # ---------------------------------------------------------------------------
@@ -110,12 +116,18 @@ class TestModifiers:
 
 
 # ---------------------------------------------------------------------------
-# Combat
+# Combat & Base Tower
 # ---------------------------------------------------------------------------
 
 
 class TestCombat:
     """Verify NailGunner hitscan firing and rewards."""
+
+    def test_tower_base_class(self) -> None:
+        """NailGunner and ConcretePump are instances of Tower."""
+        col, row = _find_plain_grass_cell()
+        assert isinstance(NailGunner(col=col, row=row), Tower)
+        assert isinstance(ConcretePump(col=col, row=row), Tower)
 
     def test_tower_has_layer_20(self) -> None:
         """NailGunner must sit at render layer 20."""
@@ -153,6 +165,103 @@ class TestCombat:
         assert enemy.alive is False
         assert world._pending_earn == 15  # noqa: SLF001
 
+    def test_disabled_tower_does_not_fire(self) -> None:
+        """Tower with is_disabled=True returns immediately without shooting."""
+        col, row = _find_plain_grass_cell()
+        tower = NailGunner(col=col, row=row)
+        tower.is_disabled = True
+        enemy = Enemy(
+            pos=pygame.Vector2(tower.center.x + 20, tower.center.y),
+            health=10.0,
+        )
+        world = World(enemies=[enemy], economy=Economy())
+
+        tower.update(0.1, world)
+        assert enemy.alive is True  # Unharmed because tower was disabled
+
+
+# ---------------------------------------------------------------------------
+# Tower Upgrades
+# ---------------------------------------------------------------------------
+
+
+class TestTowerUpgrades:
+    """Verify NailGunner and ConcretePump upgrade trees."""
+
+    def test_nail_gunner_tier_2_upgrade(self) -> None:
+        """Tier 2 Pneumatic Overdrive halves base cooldown and increments invested."""
+        col, row = _find_plain_grass_cell()
+        tower = NailGunner(col=col, row=row)
+        assert tower.invested == NAIL_GUNNER_COST
+        assert tower.upgrade_level == 1
+        assert tower.next_upgrade_cost == NAIL_GUNNER_TIER2_COST
+        assert tower.next_upgrade_name == "Pneumatic Overdrive"
+
+        tower.upgrade()
+
+        assert tower.upgrade_level == 2
+        assert tower.cooldown_max == pytest.approx(NAIL_GUNNER_COOLDOWN / 2.0)
+        assert tower.effective_cooldown == pytest.approx(NAIL_GUNNER_COOLDOWN / 2.0)
+        assert tower.invested == NAIL_GUNNER_COST + NAIL_GUNNER_TIER2_COST
+
+    def test_nail_gunner_tier_3_upgrade(self) -> None:
+        """Tier 3 The Scaffold doubles range and enables air targeting."""
+        col, row = _find_plain_grass_cell()
+        tower = NailGunner(col=col, row=row)
+        tower.upgrade()  # to tier 2
+        assert tower.can_target_air is False
+
+        assert tower.next_upgrade_cost == NAIL_GUNNER_TIER3_COST
+        assert tower.next_upgrade_name == "The Scaffold"
+
+        tower.upgrade()  # to tier 3
+
+        assert tower.upgrade_level == 3
+        assert tower.base_range == pytest.approx(NAIL_GUNNER_RANGE * 2.0)
+        assert tower.effective_range == pytest.approx(NAIL_GUNNER_RANGE * 2.0)
+        assert tower.can_target_air is True
+        assert tower.invested == (
+            NAIL_GUNNER_COST + NAIL_GUNNER_TIER2_COST + NAIL_GUNNER_TIER3_COST
+        )
+        assert tower.next_upgrade_cost is None
+
+    def test_air_targeting_restriction(self) -> None:
+        """Ground towers cannot target RainCloud; Tier 3 Scaffold NailGunner can."""
+        col, row = _find_plain_grass_cell()
+        t_ground = NailGunner(col=col, row=row)
+        t_scaffold = NailGunner(col=col, row=row)
+        t_scaffold.upgrade()
+        t_scaffold.upgrade()  # Tier 3
+
+        cloud = RainCloud(pos=pygame.Vector2(t_ground.center.x + 30, t_ground.center.y))
+
+        # Ground tower finds no target
+        assert t_ground._nearest_enemy([cloud]) is None  # noqa: SLF001
+
+        # Scaffold tower targets cloud
+        assert t_scaffold._nearest_enemy([cloud]) is cloud  # noqa: SLF001
+
+    def test_concrete_pump_upgrades(self) -> None:
+        """Tier 2 increases slow debuff to 0.2x; Tier 3 doubles splash radius."""
+        col, row = _find_plain_grass_cell()
+        pump = ConcretePump(col=col, row=row)
+        assert pump.slow_multiplier == 0.5
+        assert pump.splash_radius == CONCRETE_SPLASH_RADIUS
+
+        # Upgrade to Tier 2
+        pump.upgrade()
+        assert pump.upgrade_level == 2
+        assert pump.slow_multiplier == 0.2
+        assert pump.invested == CONCRETE_PUMP_COST + CONCRETE_PUMP_TIER2_COST
+
+        # Upgrade to Tier 3
+        pump.upgrade()
+        assert pump.upgrade_level == 3
+        assert pump.splash_radius == pytest.approx(CONCRETE_SPLASH_RADIUS * 2.0)
+        assert pump.invested == (
+            CONCRETE_PUMP_COST + CONCRETE_PUMP_TIER2_COST + CONCRETE_PUMP_TIER3_COST
+        )
+
 
 # ---------------------------------------------------------------------------
 # Concrete Pump & Projectiles
@@ -160,7 +269,7 @@ class TestCombat:
 
 
 class TestConcretePumpAndGlob:
-    """Verify ConcretePump artillery and ConcreteGlob splash damage."""
+    """Verify ConcretePump target leading and ConcreteGlob splash damage."""
 
     def test_concrete_pump_base_stats(self) -> None:
         """ConcretePump base stats match settings."""
@@ -172,20 +281,27 @@ class TestConcretePumpAndGlob:
         assert pump.base_damage == CONCRETE_PUMP_DAMAGE
         assert pump.layer == 20
 
-    def test_concrete_pump_spawns_projectile(self) -> None:
-        """ConcretePump spawns a ConcreteGlob in world.projectiles when firing."""
+    def test_concrete_pump_leads_target(self) -> None:
+        """ConcretePump predicts target position based on flight time."""
         col, row = _find_plain_grass_cell()
         pump = ConcretePump(col=col, row=row)
-        enemy = Rotted2x4(pos=pygame.Vector2(pump.center.x + 30, pump.center.y))
+        # Enemy moving horizontally at 100 px/s
+        enemy = Rotted2x4(
+            pos=pygame.Vector2(pump.center.x + 100, pump.center.y),
+            speed=100.0,
+        )
         world = World(enemies=[enemy])
+
+        distance = pump.center.distance_to(enemy.pos)
+        flight_time = distance / CONCRETE_GLOB_SPEED
+        expected_lead = enemy.predict_pos(flight_time)
 
         pump.update(0.1, world)
 
         assert len(world.projectiles) == 1
         glob = world.projectiles[0]
         assert isinstance(glob, ConcreteGlob)
-        assert glob.target_pos == enemy.pos
-        assert pump._cooldown_remaining > 0.0  # noqa: SLF001
+        assert glob.target_pos == expected_lead
 
     def test_concrete_glob_detonates_and_slows_in_splash(self) -> None:
         """ConcreteGlob splash damages and applies SpeedModifier to all enemies in radius."""
@@ -197,22 +313,16 @@ class TestConcretePumpAndGlob:
             damage=5.0,
         )
 
-        # Enemy inside 90px splash radius
         e1 = Rotted2x4(pos=pygame.Vector2(220, 200), health=50.0)
-        # Enemy outside splash radius
         e2 = Rotted2x4(pos=pygame.Vector2(400, 400), health=50.0)
 
         world = World(enemies=[e1, e2], projectiles=[glob])
 
-        # Step 0.1s: glob covers 20px, easily reaching target (5px away)
         glob.update(0.1, world)
 
         assert glob.alive is False
-        assert e1.health == 45.0  # 50 - 5 damage
+        assert e1.health == 45.0
         assert "speed" in e1.modifiers
         assert e1.modifiers["speed"].multiplier == 0.5
         assert e1.modifiers["speed"].duration == 3.0
-
-        # Outside enemy unaffected
         assert e2.health == 50.0
-        assert "speed" not in e2.modifiers

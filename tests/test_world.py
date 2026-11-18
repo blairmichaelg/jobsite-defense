@@ -1,4 +1,4 @@
-"""Tests for src/world.py — construction validation and tower liquidation.
+"""Tests for src/world.py — construction validation, upgrades, and tower liquidation.
 
 SDL dummy drivers are configured in conftest.py.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from src.economy import Economy
 from src.level import ROAD_CELLS
-from src.settings import NAIL_GUNNER_COST
+from src.settings import NAIL_GUNNER_COST, NAIL_GUNNER_TIER2_COST
 from src.tower import ConcretePump, NailGunner
 from src.world import World
 
@@ -18,7 +18,6 @@ class TestWorldTryBuild:
     def test_try_build_succeeds_on_empty_grass(self) -> None:
         """Building a NailGunner on an empty grass tile with budget succeeds."""
         world = World(economy=Economy(project_budget=1500))
-        # (0, 3) is a grass tile outside ROAD_CELLS
         assert (0, 3) not in ROAD_CELLS
         success = world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")
 
@@ -33,7 +32,6 @@ class TestWorldTryBuild:
         world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")
         assert world.economy.project_budget == 1000
 
-        # Attempt to build another tower on the exact same tile
         second_attempt = world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")
         assert second_attempt is False
         assert world.economy.project_budget == 1000
@@ -68,19 +66,50 @@ class TestWorldTryBuild:
         assert world.economy.project_budget == 750
 
 
-class TestWorldSellTower:
-    """Validate World.sell_tower liquidation and refunds."""
+class TestWorldUpgradesAndLiquidation:
+    """Validate World.try_upgrade_tower and invested refund calculations."""
 
-    def test_sell_tower_removes_and_refunds_70_percent(self) -> None:
-        """Selling a tower deletes it and refunds 70% of base cost to economy."""
+    def test_try_upgrade_tower_succeeds_when_affordable(self) -> None:
+        """Upgrading tower spends next tier cost and advances tower level."""
+        world = World(economy=Economy(project_budget=1000))
+        world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")  # $500 spent, $500 left
+
+        success = world.try_upgrade_tower(0, 3)  # Tier 2 costs $300
+        assert success is True
+        assert world.economy.project_budget == 200
+        tower = world.towers[(0, 3)]
+        assert tower.upgrade_level == 2
+        assert tower.invested == NAIL_GUNNER_COST + NAIL_GUNNER_TIER2_COST
+
+    def test_try_upgrade_fails_when_unaffordable(self) -> None:
+        """Upgrading fails when budget is below next tier cost."""
+        world = World(economy=Economy(project_budget=600))
+        world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")  # $100 left, tier 2 is $300
+
+        success = world.try_upgrade_tower(0, 3)
+        assert success is False
+        assert world.economy.project_budget == 100
+        assert world.towers[(0, 3)].upgrade_level == 1
+
+    def test_try_upgrade_fails_on_empty_cell(self) -> None:
+        """Upgrading an empty cell returns False without modifying budget."""
+        world = World(economy=Economy(project_budget=500))
+        assert world.try_upgrade_tower(2, 2) is False
+        assert world.economy.project_budget == 500
+
+    def test_sell_tower_refunds_70_percent_of_invested_including_upgrades(self) -> None:
+        """Selling a tower refunds 70% of total invested dollars (base + upgrades)."""
         world = World(economy=Economy(project_budget=1500))
-        world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")
-        assert world.economy.project_budget == 1000
+        world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")  # invested = 500
+        world.try_upgrade_tower(0, 3)                           # invested = 800 (500 + 300)
 
-        # Sell Nail Gunner: cost 500 * 0.7 = 350 refund
+        # Budget after build ($500) and upgrade ($300) = $700
+        assert world.economy.project_budget == 700
+
+        # Refund 70% of 800 = 560
         world.sell_tower(0, 3)
         assert (0, 3) not in world.towers
-        assert world.economy.project_budget == 1350
+        assert world.economy.project_budget == 700 + 560
 
     def test_sell_nonexistent_tower_is_no_op(self) -> None:
         """Calling sell_tower on an empty cell must not raise or modify budget."""

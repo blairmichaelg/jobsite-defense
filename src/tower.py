@@ -1,20 +1,28 @@
-"""Jobsite Defense — tower definitions.
+"""Jobsite Defense — tower base class, archetypes, and upgrade trees.
 
-Phase 3 changes
+Phase 4 changes
 ---------------
-* Added ``ConcretePump``: AoE slowdown artillery tower launching ``ConcreteGlob``
-  projectiles ($750, 2.5s cooldown, 150px range).
-* Real typing on ``update(dt, world: World)`` — removed function-level import
-  and runtime isinstance gate.
-* Kill bounty in ``NailGunner`` uses ``target.bounty`` for archetype-specific payouts.
-* Both towers satisfy ``Entity`` and ``Clickable``.
+* Created ``Tower`` base class with:
+  - ``COST`` and ``invested`` tracking total dollars spent (purchase + upgrades).
+  - ``is_disabled`` state triggered by OSHA Inspector aura (freezes update, draws red X).
+  - ``can_target_air`` capability checking (RainCloud targeting).
+  - ``upgrade_level: int = 1`` and ``upgrade()`` system.
+  - Common selection and range ring rendering.
+* ``TOWER_TYPES`` dictionary registry mapping tower type strings to subclasses.
+* Target leading for ``ConcretePump``: computes flight time and aims at ``target.predict_pos()``.
+* **NailGunner Upgrades:**
+  - Tier 2 ($300): "Pneumatic Overdrive" -> Cooldown divided by 2.
+  - Tier 3 ($800): "The Scaffold" -> Range doubled; ``can_target_air = True``.
+* **ConcretePump Upgrades:**
+  - Tier 2 ($450): "Quick-Dry" -> Slow debuff becomes 0.2x.
+  - Tier 3 ($1000): "Cement Truck" -> Doubles splash radius.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pygame
 
@@ -24,14 +32,20 @@ from src.projectile import ConcreteGlob
 from src.protocols import Clickable, Entity
 from src.settings import (
     CELL_SIZE,
+    CONCRETE_GLOB_SPEED,
     CONCRETE_PUMP_COOLDOWN,
     CONCRETE_PUMP_COST,
     CONCRETE_PUMP_DAMAGE,
     CONCRETE_PUMP_RANGE,
+    CONCRETE_PUMP_TIER2_COST,
+    CONCRETE_PUMP_TIER3_COST,
+    CONCRETE_SPLASH_RADIUS,
     NAIL_GUNNER_COOLDOWN,
     NAIL_GUNNER_COST,
     NAIL_GUNNER_DAMAGE,
     NAIL_GUNNER_RANGE,
+    NAIL_GUNNER_TIER2_COST,
+    NAIL_GUNNER_TIER3_COST,
 )
 
 if TYPE_CHECKING:
@@ -39,98 +53,67 @@ if TYPE_CHECKING:
     from src.world import World
 
 # ---------------------------------------------------------------------------
-# Colors & Visuals
+# Visual Constants
 # ---------------------------------------------------------------------------
 
 _COLOR_TOWER_BODY: tuple[int, int, int] = (60, 60, 65)
 _COLOR_CONCRETE_BODY: tuple[int, int, int] = (75, 75, 70)
-_COLOR_BARREL: tuple[int, int, int] = (230, 130, 30)         # orange nail gunner tip
-_COLOR_CONCRETE_NOZZLE: tuple[int, int, int] = (180, 180, 175) # metallic pipe nozzle
-_COLOR_SHOT: tuple[int, int, int] = (255, 240, 50)            # yellow nail flash
+_COLOR_BARREL: tuple[int, int, int] = (230, 130, 30)           # orange tip
+_COLOR_CONCRETE_NOZZLE: tuple[int, int, int] = (180, 180, 175) # metallic pipe
+_COLOR_SHOT: tuple[int, int, int] = (255, 240, 50)              # yellow nail flash
 _COLOR_RANGE_RING: tuple[int, int, int] = (200, 200, 200)
-_SHOT_FLASH_DURATION: float = 0.07   # seconds nail flash line is visible
-_IDLE_SPIN_RATE: float = 60.0        # degrees per second when idle
+_COLOR_DISABLED_X: tuple[int, int, int] = (220, 40, 40)
+_SHOT_FLASH_DURATION: float = 0.07
+_IDLE_SPIN_RATE: float = 60.0
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _nearest_enemy(
-    origin: pygame.Vector2, enemies: list[Enemy], max_range_sq: float
-) -> Enemy | None:
-    """Return the closest alive enemy within range, or None."""
-    best: Enemy | None = None
-    best_dist_sq = max_range_sq
-
-    for enemy in enemies:
-        if not enemy.alive:
-            continue
-        d_sq = origin.distance_squared_to(enemy.pos)
-        if d_sq <= best_dist_sq:
-            best_dist_sq = d_sq
-            best = enemy
-
-    return best
-
-
-# ---------------------------------------------------------------------------
-# NailGunner
+# Base Tower Class
 # ---------------------------------------------------------------------------
 
 @dataclass
-class NailGunner:
-    """Single-target hit-scan tower.  Satisfies ``Entity`` and ``Clickable``.
+class Tower:
+    """Base class for all defensive towers.
 
-    Attributes:
-        col: Grid column the tower occupies.
-        row: Grid row the tower occupies.
-        center: Pixel centre of the cell (computed from col/row).
-        cost: Purchase cost (dollars).
-        base_range: Un-modified attack range in pixels.
-        base_damage: Un-modified damage per shot.
-        cooldown_max: Base seconds between shots (before modifiers).
-        effective_range: Actual range after power-up multiplier.
-        effective_damage: Actual damage after power-up multiplier.
-        effective_cooldown: Actual cooldown after attack_speed modifier.
-        _range_sq: ``effective_range ** 2`` — avoids sqrt in hot path.
-        _cooldown_remaining: Seconds until next shot is allowed.
-        _barrel_angle: Current barrel rotation in degrees (0° = right).
-        _shot_target: Pixel position of last hit (for the flash line).
-        _shot_flash: Remaining seconds for the flash-line FX.
-        selected: Whether a UI element has this tower selected.
-        layer: Render/update layer — towers sit at layer 20.
+    Satisfies ``Entity`` (layer 20) and ``Clickable``.
     """
 
     col: int
     row: int
+    cost: int = 500
+    invested: int = 500
+    upgrade_level: int = 1
+    can_target_air: bool = False
+    is_disabled: bool = False
+    selected: bool = field(default=False, init=False)
+    layer: int = field(default=20, init=False)
+
     center: pygame.Vector2 = field(init=False)
-    cost: int = NAIL_GUNNER_COST
-    base_range: float = NAIL_GUNNER_RANGE
-    base_damage: float = NAIL_GUNNER_DAMAGE
-    cooldown_max: float = NAIL_GUNNER_COOLDOWN
+    base_range: float = 120.0
+    base_damage: float = 25.0
+    cooldown_max: float = 0.8
+
     effective_range: float = field(init=False)
     effective_damage: float = field(init=False)
     effective_cooldown: float = field(init=False)
     _range_sq: float = field(init=False)
     _cooldown_remaining: float = field(default=0.0, init=False)
     _barrel_angle: float = field(default=0.0, init=False)
-    _shot_target: pygame.Vector2 | None = field(default=None, init=False)
-    _shot_flash: float = field(default=0.0, init=False)
-    selected: bool = field(default=False, init=False)
-    layer: int = field(default=20, init=False)
+
+    COST: ClassVar[int] = 500
 
     def __post_init__(self) -> None:
-        """Compute derived fields and apply any power-up modifier."""
+        """Derive cell center coordinate and power-up stats."""
         half = CELL_SIZE // 2
         self.center = pygame.Vector2(
             self.col * CELL_SIZE + half,
             self.row * CELL_SIZE + half,
         )
+        self.invested = self.cost
         self._apply_modifiers()
 
     def _apply_modifiers(self) -> None:
-        """Read the cell's power-up tile (if any) and scale effective stats."""
+        """Scale effective attributes based on power-up tile."""
         self.effective_range = self.base_range
         self.effective_damage = self.base_damage
         self.effective_cooldown = self.cooldown_max
@@ -147,17 +130,124 @@ class NailGunner:
 
         self._range_sq = self.effective_range ** 2
 
-    # ------------------------------------------------------------------
-    # Entity protocol
-    # ------------------------------------------------------------------
+    @property
+    def next_upgrade_cost(self) -> int | None:
+        """Cost of the next tier, or None if at max tier."""
+        return None
+
+    @property
+    def next_upgrade_name(self) -> str | None:
+        """Name of the next tier, or None if at max tier."""
+        return None
+
+    def upgrade(self) -> None:
+        """Advance to next upgrade tier, scaling stats and updating invested."""
+
+    def _nearest_enemy(self, enemies: list[Enemy]) -> Enemy | None:
+        """Return the closest targetable alive enemy within range, or None."""
+        best: Enemy | None = None
+        best_dist_sq = self._range_sq
+
+        for enemy in enemies:
+            if not enemy.alive:
+                continue
+            if enemy.is_flying and not self.can_target_air:
+                continue
+            d_sq = self.center.distance_squared_to(enemy.pos)
+            if d_sq <= best_dist_sq:
+                best_dist_sq = d_sq
+                best = enemy
+
+        return best
 
     def update(self, dt: float, world: World) -> None:
-        """Tick timers, scan world.enemies, and fire if the cooldown allows.
+        """Advance tower state by dt."""
 
-        Args:
-            dt: Clamped delta-time in seconds.
-            world: Shared ``World`` context.
-        """
+    def draw(self, surface: pygame.Surface) -> None:
+        """Render tower on surface."""
+
+    # ------------------------------------------------------------------
+    # Clickable Protocol
+    # ------------------------------------------------------------------
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        """Toggle selection on left-click; deselect on right-click."""
+        if (
+            event.type == pygame.MOUSEBUTTONDOWN
+            and event.button == 1
+            and cell_rect(self.col, self.row).collidepoint(event.pos)
+        ):
+            self.selected = not self.selected
+            return True
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and self.selected:
+            self.selected = False
+            return True
+        return False
+
+    def _draw_disabled_x(self, surface: pygame.Surface) -> None:
+        """Overlay a prominent red 'X' when tower is disabled by Stop-Work order."""
+        rect = cell_rect(self.col, self.row).inflate(-8, -8)
+        pygame.draw.line(surface, _COLOR_DISABLED_X, rect.topleft, rect.bottomright, 4)
+        pygame.draw.line(surface, _COLOR_DISABLED_X, rect.topright, rect.bottomleft, 4)
+
+
+# ---------------------------------------------------------------------------
+# NailGunner
+# ---------------------------------------------------------------------------
+
+@dataclass
+class NailGunner(Tower):
+    """Single-target hit-scan tower with anti-air upgrade at Tier 3."""
+
+    COST: ClassVar[int] = NAIL_GUNNER_COST
+    cost: int = NAIL_GUNNER_COST
+    base_range: float = NAIL_GUNNER_RANGE
+    base_damage: float = NAIL_GUNNER_DAMAGE
+    cooldown_max: float = NAIL_GUNNER_COOLDOWN
+
+    _shot_target: pygame.Vector2 | None = field(default=None, init=False)
+    _shot_flash: float = field(default=0.0, init=False)
+
+    @property
+    def next_upgrade_cost(self) -> int | None:
+        if self.upgrade_level == 1:
+            return NAIL_GUNNER_TIER2_COST
+        if self.upgrade_level == 2:
+            return NAIL_GUNNER_TIER3_COST
+        return None
+
+    @property
+    def next_upgrade_name(self) -> str | None:
+        if self.upgrade_level == 1:
+            return "Pneumatic Overdrive"
+        if self.upgrade_level == 2:
+            return "The Scaffold"
+        return None
+
+    def upgrade(self) -> None:
+        """Apply Tier 2 or Tier 3 upgrades."""
+        cost = self.next_upgrade_cost
+        if cost is None:
+            return
+
+        if self.upgrade_level == 1:
+            # Tier 2: Pneumatic Overdrive — Cooldown cut in half
+            self.cooldown_max /= 2.0
+            self.upgrade_level = 2
+        elif self.upgrade_level == 2:
+            # Tier 3: The Scaffold — Range doubled, anti-air enabled
+            self.base_range *= 2.0
+            self.can_target_air = True
+            self.upgrade_level = 3
+
+        self.invested += cost
+        self._apply_modifiers()
+
+    def update(self, dt: float, world: World) -> None:
+        """Tick timers and fire hitscan shots unless disabled by OSHA."""
+        if self.is_disabled:
+            return
+
         if self._cooldown_remaining > 0.0:
             self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
 
@@ -171,7 +261,7 @@ class NailGunner:
         if self._cooldown_remaining > 0.0:
             return
 
-        target = _nearest_enemy(self.center, world.enemies, self._range_sq)
+        target = self._nearest_enemy(world.enemies)
         if target is None:
             return
 
@@ -189,10 +279,14 @@ class NailGunner:
             self._barrel_angle = math.degrees(math.atan2(delta.y, delta.x))
 
     def draw(self, surface: pygame.Surface) -> None:
-        """Render the tower body, rotating barrel triangle, and shot FX."""
+        """Render the tower body, rotating barrel, range ring, or disabled X."""
         rect = cell_rect(self.col, self.row)
         body_rect = rect.inflate(-12, -12)
         pygame.draw.rect(surface, _COLOR_TOWER_BODY, body_rect, border_radius=4)
+
+        if self.upgrade_level >= 3:
+            # Scaffold visual accent
+            pygame.draw.rect(surface, (180, 180, 120), body_rect, width=2, border_radius=4)
 
         if self.selected:
             pygame.draw.circle(
@@ -214,8 +308,11 @@ class NailGunner:
                 2,
             )
 
+        if self.is_disabled:
+            self._draw_disabled_x(surface)
+
     def _draw_barrel(self, surface: pygame.Surface) -> None:
-        """Draw a small equilateral triangle pointing in ``_barrel_angle``."""
+        """Draw equilateral triangle pointing in ``_barrel_angle``."""
         angle_rad = math.radians(self._barrel_angle)
         tip_len = 20.0
         half_base = 7.0
@@ -243,93 +340,63 @@ class NailGunner:
             [(int(tip.x), int(tip.y)), (int(bl.x), int(bl.y)), (int(br.x), int(br.y))],
         )
 
-    # ------------------------------------------------------------------
-    # Clickable protocol
-    # ------------------------------------------------------------------
-
-    def handle_event(self, event: pygame.event.Event) -> bool:
-        """Toggle selection when the tower cell is clicked."""
-        if (
-            event.type == pygame.MOUSEBUTTONDOWN
-            and event.button == 1
-            and cell_rect(self.col, self.row).collidepoint(event.pos)
-        ):
-            self.selected = not self.selected
-            return True
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and self.selected:
-            self.selected = False
-            return True
-        return False
-
 
 # ---------------------------------------------------------------------------
 # ConcretePump
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ConcretePump:
-    """AoE artillery pump firing slow-down concrete globs.
+class ConcretePump(Tower):
+    """AoE artillery pump launching predictive wet concrete globs."""
 
-    Satisfies ``Entity`` and ``Clickable`` at layer 20.
-
-    Attributes:
-        col: Grid column.
-        row: Grid row.
-        cost: Purchase cost in dollars ($750).
-        cooldown_max: Seconds between glob launches (2.5s).
-        base_range: Attack range in pixels (150px).
-        base_damage: Direct hit splash damage (5.0).
-    """
-
-    col: int
-    row: int
-    center: pygame.Vector2 = field(init=False)
+    COST: ClassVar[int] = CONCRETE_PUMP_COST
     cost: int = CONCRETE_PUMP_COST
     base_range: float = CONCRETE_PUMP_RANGE
     base_damage: float = CONCRETE_PUMP_DAMAGE
     cooldown_max: float = CONCRETE_PUMP_COOLDOWN
-    effective_range: float = field(init=False)
-    effective_damage: float = field(init=False)
-    effective_cooldown: float = field(init=False)
-    _range_sq: float = field(init=False)
-    _cooldown_remaining: float = field(default=0.0, init=False)
-    _barrel_angle: float = field(default=0.0, init=False)
-    selected: bool = field(default=False, init=False)
-    layer: int = field(default=20, init=False)
 
-    def __post_init__(self) -> None:
-        """Derive cell center coordinate and power-up stats."""
-        half = CELL_SIZE // 2
-        self.center = pygame.Vector2(
-            self.col * CELL_SIZE + half,
-            self.row * CELL_SIZE + half,
-        )
+    splash_radius: float = CONCRETE_SPLASH_RADIUS
+    slow_multiplier: float = 0.5
+
+    @property
+    def next_upgrade_cost(self) -> int | None:
+        if self.upgrade_level == 1:
+            return CONCRETE_PUMP_TIER2_COST
+        if self.upgrade_level == 2:
+            return CONCRETE_PUMP_TIER3_COST
+        return None
+
+    @property
+    def next_upgrade_name(self) -> str | None:
+        if self.upgrade_level == 1:
+            return "Quick-Dry"
+        if self.upgrade_level == 2:
+            return "Cement Truck"
+        return None
+
+    def upgrade(self) -> None:
+        """Apply Tier 2 or Tier 3 upgrades."""
+        cost = self.next_upgrade_cost
+        if cost is None:
+            return
+
+        if self.upgrade_level == 1:
+            # Tier 2: Quick-Dry — Debuff multiplier becomes 0.2x (was 0.5x)
+            self.slow_multiplier = 0.2
+            self.upgrade_level = 2
+        elif self.upgrade_level == 2:
+            # Tier 3: Cement Truck — Doubles splash radius
+            self.splash_radius *= 2.0
+            self.upgrade_level = 3
+
+        self.invested += cost
         self._apply_modifiers()
 
-    def _apply_modifiers(self) -> None:
-        """Scale effective attributes based on power-up tile."""
-        self.effective_range = self.base_range
-        self.effective_damage = self.base_damage
-        self.effective_cooldown = self.cooldown_max
-
-        tile = POWERUP_TILES.get((self.col, self.row))
-        if tile is not None:
-            effect, multiplier = tile
-            if effect == "range":
-                self.effective_range = self.base_range * multiplier
-            elif effect == "damage":
-                self.effective_damage = self.base_damage * multiplier
-            elif effect == "attack_speed":
-                self.effective_cooldown = self.cooldown_max / multiplier
-
-        self._range_sq = self.effective_range ** 2
-
-    # ------------------------------------------------------------------
-    # Entity Protocol
-    # ------------------------------------------------------------------
-
     def update(self, dt: float, world: World) -> None:
-        """Tick cooldown, scan nearest enemy, launch ConcreteGlob."""
+        """Tick cooldown and launch predictive concrete glob unless disabled."""
+        if self.is_disabled:
+            return
+
         if self._cooldown_remaining > 0.0:
             self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
 
@@ -338,29 +405,38 @@ class ConcretePump:
         if self._cooldown_remaining > 0.0:
             return
 
-        target = _nearest_enemy(self.center, world.enemies, self._range_sq)
+        target = self._nearest_enemy(world.enemies)
         if target is None:
             return
 
-        delta = target.pos - self.center
+        # Predictive targeting (flight time lead calculation)
+        distance = self.center.distance_to(target.pos)
+        flight_time = distance / CONCRETE_GLOB_SPEED
+        aim_pos = target.predict_pos(flight_time)
+
+        delta = aim_pos - self.center
         if delta.length_squared() > 0:
             self._barrel_angle = math.degrees(math.atan2(delta.y, delta.x))
 
-        # Launch ConcreteGlob aimed at current target pos
         glob = ConcreteGlob(
             pos=pygame.Vector2(self.center),
-            target_pos=pygame.Vector2(target.pos),
+            target_pos=pygame.Vector2(aim_pos),
             damage=self.effective_damage,
+            splash_radius=self.splash_radius,
+            slow_multiplier=self.slow_multiplier,
         )
         world.projectiles.append(glob)
         self._cooldown_remaining = self.effective_cooldown
 
     def draw(self, surface: pygame.Surface) -> None:
-        """Draw concrete pump body, hose nozzle, and selection range ring."""
+        """Draw concrete pump body, nozzle, range ring, or disabled X."""
         rect = cell_rect(self.col, self.row)
         body_rect = rect.inflate(-10, -10)
         pygame.draw.rect(surface, _COLOR_CONCRETE_BODY, body_rect, border_radius=6)
         pygame.draw.rect(surface, (45, 45, 40), body_rect, width=2, border_radius=6)
+
+        if self.upgrade_level >= 3:
+            pygame.draw.rect(surface, (140, 200, 140), body_rect, width=2, border_radius=6)
 
         if self.selected:
             pygame.draw.circle(
@@ -372,6 +448,9 @@ class ConcretePump:
             )
 
         self._draw_nozzle(surface)
+
+        if self.is_disabled:
+            self._draw_disabled_x(surface)
 
     def _draw_nozzle(self, surface: pygame.Surface) -> None:
         """Render thick concrete hose pipe pointing toward ``_barrel_angle``."""
@@ -397,23 +476,17 @@ class ConcretePump:
             7,
         )
 
-    # ------------------------------------------------------------------
-    # Clickable Protocol
-    # ------------------------------------------------------------------
 
-    def handle_event(self, event: pygame.event.Event) -> bool:
-        """Toggle selection on click."""
-        if (
-            event.type == pygame.MOUSEBUTTONDOWN
-            and event.button == 1
-            and cell_rect(self.col, self.row).collidepoint(event.pos)
-        ):
-            self.selected = not self.selected
-            return True
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3 and self.selected:
-            self.selected = False
-            return True
-        return False
+# ---------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------
+
+TOWER_TYPES: dict[str, type[Tower]] = {
+    "nail_gunner": NailGunner,
+    "nailgunner": NailGunner,
+    "concrete_pump": ConcretePump,
+    "concretepump": ConcretePump,
+}
 
 
 # Type narrowing assertions for the Protocol checker.
