@@ -257,7 +257,7 @@ class TestPhase4Archetypes:
             economy=Economy(),
         )
 
-        boss.update(0.01, world)
+        world.refresh_auras()
 
         assert t_near.is_disabled is True
         assert t_far.is_disabled is False
@@ -270,13 +270,49 @@ class TestPhase4Archetypes:
         world = World(enemies=[boss], towers={(3, 3): tower})
 
         # Close -> disabled
-        boss.update(0.01, world)
+        world.refresh_auras()
         assert tower.is_disabled is True
 
         # Boss moves far away
         boss.pos = pygame.Vector2(800, 800)
-        boss.update(0.01, world)
+        world.refresh_auras()
         assert tower.is_disabled is False
+
+    def test_overlapping_osha_auras(self) -> None:
+        """Multiple OSHA inspectors properly disable tower until all move away."""
+        boss1 = OshaInspector(pos=pygame.Vector2(200, 200))
+        boss2 = OshaInspector(pos=pygame.Vector2(210, 200))
+        tower = NailGunner(col=3, row=3)
+        tower.center = pygame.Vector2(220, 200)
+
+        world = World(enemies=[boss1, boss2], towers={(3, 3): tower})
+
+        world.refresh_auras()
+        assert tower.is_disabled is True
+
+        # Boss 1 moves away, Boss 2 still nearby -> still disabled
+        boss1.pos = pygame.Vector2(1000, 1000)
+        world.refresh_auras()
+        assert tower.is_disabled is True
+
+        # Boss 2 also moves away -> tower enabled
+        boss2.pos = pygame.Vector2(1000, 1000)
+        world.refresh_auras()
+        assert tower.is_disabled is False
+
+    def test_travel_budget_with_expiring_modifier(self) -> None:
+        """_travel_budget accounts for modifier expiring during the flight window."""
+        enemy = Rotted2x4(pos=pygame.Vector2(100, 100), speed=100.0)
+        # Modifier: 0.5x speed for 1.0s
+        enemy.apply_speed_modifier(0.5, 1.0)
+
+        # For 2.0s: 1.0s at 50 px/s (50px) + 1.0s at 100 px/s (100px) = 150px
+        budget = enemy._travel_budget(2.0)
+        assert abs(budget - 150.0) < 0.001
+
+        # For 0.5s: 0.5s at 50 px/s = 25px
+        budget_short = enemy._travel_budget(0.5)
+        assert abs(budget_short - 25.0) < 0.001
 
 
 # ---------------------------------------------------------------------------

@@ -409,10 +409,11 @@ class ConcretePump(Tower):
         if target is None:
             return
 
-        # Predictive targeting (flight time lead calculation)
-        distance = self.center.distance_to(target.pos)
-        flight_time = distance / CONCRETE_GLOB_SPEED
-        aim_pos = target.predict_pos(flight_time)
+        # 3-pass iterative lead calculation
+        aim_pos = pygame.Vector2(target.pos)
+        for _ in range(3):
+            flight = self.center.distance_to(aim_pos) / CONCRETE_GLOB_SPEED
+            aim_pos = target.predict_pos(flight)
 
         delta = aim_pos - self.center
         if delta.length_squared() > 0:
@@ -478,6 +479,100 @@ class ConcretePump(Tower):
 
 
 # ---------------------------------------------------------------------------
+# TarpCannon
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TarpCannon(Tower):
+    """Anti-air prioritized rapid-fire cannon launching homing tarp nets.
+
+    Filters and prioritizes flying enemies first.
+    """
+
+    COST: ClassVar[int] = 400
+    cost: int = 400
+    base_range: float = 160.0
+    base_damage: float = 10.0
+    cooldown_max: float = 0.3
+    can_target_air: bool = True
+
+    def _nearest_enemy(self, enemies: list[Enemy]) -> Enemy | None:
+        """Prioritize flying enemies; target ground creeps only if no flyers in range."""
+        flyers = [e for e in enemies if e.alive and e.is_flying]
+        flyer_target = super()._nearest_enemy(flyers)
+        if flyer_target is not None:
+            return flyer_target
+        ground = [e for e in enemies if e.alive and not e.is_flying]
+        return super()._nearest_enemy(ground)
+
+    def update(self, dt: float, world: World) -> None:
+        """Tick cooldown and fire homing net projectile unless disabled."""
+        if self.is_disabled:
+            return
+
+        if self._cooldown_remaining > 0.0:
+            self._cooldown_remaining = max(0.0, self._cooldown_remaining - dt)
+
+        self._barrel_angle = (self._barrel_angle + _IDLE_SPIN_RATE * dt) % 360.0
+
+        if self._cooldown_remaining > 0.0:
+            return
+
+        target = self._nearest_enemy(world.enemies)
+        if target is None:
+            return
+
+        delta = target.pos - self.center
+        if delta.length_squared() > 0:
+            self._barrel_angle = math.degrees(math.atan2(delta.y, delta.x))
+
+        from src.projectile import TarpProjectile
+
+        tarp = TarpProjectile(
+            pos=pygame.Vector2(self.center),
+            target=target,
+            damage=self.effective_damage,
+        )
+        world.projectiles.append(tarp)
+        self._cooldown_remaining = self.effective_cooldown
+
+    def draw(self, surface: pygame.Surface) -> None:
+        """Draw tarp cannon body, blue barrel, range ring, or disabled X."""
+        rect = cell_rect(self.col, self.row)
+        body_rect = rect.inflate(-12, -12)
+        pygame.draw.rect(surface, (40, 50, 70), body_rect, border_radius=4)
+        pygame.draw.rect(surface, (70, 130, 200), body_rect, width=2, border_radius=4)
+
+        if self.selected:
+            pygame.draw.circle(
+                surface,
+                _COLOR_RANGE_RING,
+                (int(self.center.x), int(self.center.y)),
+                int(self.effective_range),
+                width=1,
+            )
+
+        angle_rad = math.radians(self._barrel_angle)
+        end_pos = pygame.Vector2(
+            self.center.x + math.cos(angle_rad) * 20.0,
+            self.center.y + math.sin(angle_rad) * 20.0,
+        )
+        pygame.draw.line(
+            surface,
+            (80, 160, 240),
+            (int(self.center.x), int(self.center.y)),
+            (int(end_pos.x), int(end_pos.y)),
+            6,
+        )
+        pygame.draw.circle(
+            surface, (30, 40, 60), (int(self.center.x), int(self.center.y)), 5
+        )
+
+        if self.is_disabled:
+            self._draw_disabled_x(surface)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -486,6 +581,8 @@ TOWER_TYPES: dict[str, type[Tower]] = {
     "nailgunner": NailGunner,
     "concrete_pump": ConcretePump,
     "concretepump": ConcretePump,
+    "tarp_cannon": TarpCannon,
+    "tarpcannon": TarpCannon,
 }
 
 

@@ -9,12 +9,15 @@ from __future__ import annotations
 import pygame
 import pytest
 
+from src.enemy import HOABoardMember, OshaInspector, RainCloud, Rotted2x4
 from src.level import (
     POWERUP_TILES,
     ROAD_CELLS,
     WAYPOINT_PIXELS,
     WAYPOINTS,
+    LevelData,
     _build_road,
+    load_level,
 )
 from src.settings import CELL_SIZE, GRID_COLS, GRID_ROWS
 
@@ -127,3 +130,61 @@ class TestWaypointPixels:
             half = CELL_SIZE / 2.0
             assert abs(v.x - (col * CELL_SIZE + half)) < 0.01
             assert abs(v.y - (row * CELL_SIZE + half)) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# JSON Level Loader
+# ---------------------------------------------------------------------------
+
+
+class TestJsonLevelLoader:
+    """Validate parsing of external JSON level definitions."""
+
+    def test_load_level_1_file(self) -> None:
+        """load_level successfully parses levels/level_1.json."""
+        lvl = load_level("levels/level_1.json")
+        assert isinstance(lvl, LevelData)
+        assert lvl.name == "The Foundation"
+        assert lvl.waypoints == ((-1, 1), (6, 1), (6, 8), (16, 8))
+        assert len(lvl.waypoint_pixels) == 4
+        assert len(lvl.road_cells) > 0
+        assert (4, 0) in lvl.powerup_tiles
+        assert lvl.powerup_tiles[(4, 0)] == ("attack_speed", 1.25)
+        assert len(lvl.waves) == 1
+        wave = lvl.waves[0]
+        assert wave.enemy is Rotted2x4
+        assert wave.count == 10
+        assert wave.interval == 1.0
+
+    def test_load_custom_level_json(self, tmp_path: pytest.TempPathFactory) -> None:
+        """load_level correctly decodes multiple wave specs and powerup entries."""
+        import json
+
+        custom_data = {
+            "name": "Custom Blueprint",
+            "waypoints": [[-1, 5], [10, 5], [10, 10], [16, 10]],
+            "powerups": {
+                "2, 2": ["damage", 1.5],
+                "5, 8": ["range", 1.2],
+            },
+            "waves": [
+                {"enemy": "Rotted2x4", "count": 5, "interval": 0.5},
+                {"enemy": "HOABoardMember", "count": 8, "interval": 0.3},
+                {"enemy": "RainCloud", "count": 3, "interval": 2.0},
+                {"enemy": "OshaInspector", "count": 1, "interval": 1.0},
+            ],
+        }
+
+        path = tmp_path / "custom_level.json"  # type: ignore[operator]
+        path.write_text(json.dumps(custom_data), encoding="utf-8")
+
+        lvl = load_level(str(path))
+        assert lvl.name == "Custom Blueprint"
+        assert lvl.waypoints == ((-1, 5), (10, 5), (10, 10), (16, 10))
+        assert lvl.powerup_tiles[(2, 2)] == ("damage", 1.5)
+        assert lvl.powerup_tiles[(5, 8)] == ("range", 1.2)
+        assert len(lvl.waves) == 4
+        assert lvl.waves[0].enemy is Rotted2x4
+        assert lvl.waves[1].enemy is HOABoardMember
+        assert lvl.waves[2].enemy is RainCloud
+        assert lvl.waves[3].enemy is OshaInspector

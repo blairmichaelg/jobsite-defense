@@ -11,7 +11,7 @@ import pytest
 from src.economy import Economy
 from src.enemy import Enemy, RainCloud, Rotted2x4
 from src.level import POWERUP_TILES, ROAD_CELLS
-from src.projectile import ConcreteGlob
+from src.projectile import ConcreteGlob, TarpProjectile
 from src.settings import (
     CONCRETE_GLOB_SPEED,
     CONCRETE_PUMP_COOLDOWN,
@@ -28,7 +28,7 @@ from src.settings import (
     NAIL_GUNNER_TIER2_COST,
     NAIL_GUNNER_TIER3_COST,
 )
-from src.tower import ConcretePump, NailGunner, Tower
+from src.tower import ConcretePump, NailGunner, TarpCannon, Tower
 from src.world import World
 
 # ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ class TestConcretePumpAndGlob:
         assert pump.layer == 20
 
     def test_concrete_pump_leads_target(self) -> None:
-        """ConcretePump predicts target position based on flight time."""
+        """ConcretePump predicts target position based on flight time with 3-pass iteration."""
         col, row = _find_plain_grass_cell()
         pump = ConcretePump(col=col, row=row)
         # Enemy moving horizontally at 100 px/s
@@ -292,9 +292,11 @@ class TestConcretePumpAndGlob:
         )
         world = World(enemies=[enemy])
 
-        distance = pump.center.distance_to(enemy.pos)
-        flight_time = distance / CONCRETE_GLOB_SPEED
-        expected_lead = enemy.predict_pos(flight_time)
+        aim = pygame.Vector2(enemy.pos)
+        for _ in range(3):
+            flight = pump.center.distance_to(aim) / CONCRETE_GLOB_SPEED
+            aim = enemy.predict_pos(flight)
+        expected_lead = aim
 
         pump.update(0.1, world)
 
@@ -326,3 +328,98 @@ class TestConcretePumpAndGlob:
         assert e1.modifiers["speed"].multiplier == 0.5
         assert e1.modifiers["speed"].duration == 3.0
         assert e2.health == 50.0
+
+
+# ---------------------------------------------------------------------------
+# TarpCannon and TarpProjectile
+# ---------------------------------------------------------------------------
+
+
+class TestTarpCannonAndProjectile:
+    """Validate TarpCannon anti-air prioritization and TarpProjectile homing mechanics."""
+
+    def test_tarp_cannon_initial_stats(self) -> None:
+        """TarpCannon initializes with cost 400, cooldown 0.3s, range 160, and damage 10."""
+        cannon = TarpCannon(col=2, row=2)
+        assert cannon.cost == 400
+        assert cannon.invested == 400
+        assert cannon.cooldown_max == 0.3
+        assert cannon.base_range == 160.0
+        assert cannon.base_damage == 10.0
+        assert cannon.can_target_air is True
+
+    def test_tarp_cannon_prioritizes_flying_enemies(self) -> None:
+        """TarpCannon targets flying enemies (RainCloud) over closer ground enemies."""
+        cannon = TarpCannon(col=4, row=4)
+        cannon.center = pygame.Vector2(200, 200)
+
+        # Ground enemy is closer (50px away)
+        ground_creep = Rotted2x4(pos=pygame.Vector2(250, 200))
+        # Flying enemy is further but within range (100px away < 160px)
+        air_creep = RainCloud(pos=pygame.Vector2(300, 200))
+
+        world = World(enemies=[ground_creep, air_creep])
+        target = cannon._nearest_enemy(world.enemies)
+
+        assert target is air_creep
+
+    def test_tarp_cannon_falls_back_to_ground_targets(self) -> None:
+        """TarpCannon targets ground enemies when no flying enemies are present."""
+        cannon = TarpCannon(col=4, row=4)
+        cannon.center = pygame.Vector2(200, 200)
+
+        ground_creep = Rotted2x4(pos=pygame.Vector2(250, 200))
+        world = World(enemies=[ground_creep])
+
+        target = cannon._nearest_enemy(world.enemies)
+        assert target is ground_creep
+
+    def test_tarp_cannon_fires_tarp_projectile(self) -> None:
+        """Updating TarpCannon when target in range spawns a TarpProjectile."""
+        cannon = TarpCannon(col=4, row=4)
+        cannon.center = pygame.Vector2(200, 200)
+        cloud = RainCloud(pos=pygame.Vector2(260, 200))
+        world = World(enemies=[cloud])
+
+        cannon.update(0.1, world)
+
+        assert len(world.projectiles) == 1
+        tarp = world.projectiles[0]
+        assert isinstance(tarp, TarpProjectile)
+        assert tarp.target is cloud
+
+    def test_tarp_projectile_homes_and_damages(self) -> None:
+        """TarpProjectile moves toward target, hits, and deals damage."""
+        cloud = RainCloud(pos=pygame.Vector2(220, 200), health=60.0)
+        proj = TarpProjectile(
+            pos=pygame.Vector2(200, 200),
+            target=cloud,
+            speed=400.0,
+            damage=10.0,
+        )
+        world = World(enemies=[cloud], projectiles=[proj])
+
+        # At speed 400, dt 0.1 travels 40px, reaching distance 20px easily
+        proj.update(0.1, world)
+
+        assert proj.alive is False
+        assert cloud.health == 50.0
+
+    def test_tarp_projectile_awards_bounty_on_kill(self) -> None:
+        """Killing an enemy with a TarpProjectile grants its bounty to the world."""
+        cloud = RainCloud(pos=pygame.Vector2(205, 200), health=5.0)
+        proj = TarpProjectile(
+            pos=pygame.Vector2(200, 200),
+            target=cloud,
+            speed=400.0,
+            damage=10.0,
+        )
+        economy = Economy(project_budget=100)
+        world = World(enemies=[cloud], projectiles=[proj], economy=economy)
+
+        proj.update(0.1, world)
+        world.flush_earnings()
+
+        assert proj.alive is False
+        assert cloud.alive is False
+        assert world.economy.project_budget == 100 + cloud.bounty

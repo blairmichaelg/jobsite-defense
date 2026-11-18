@@ -119,8 +119,16 @@ class Enemy:
             current.duration = max(current.duration, dur)
 
     # ------------------------------------------------------------------
-    # Position Prediction (Target Leading)
+    # Position Prediction (Target Leading) & Aura
     # ------------------------------------------------------------------
+
+    def _travel_budget(self, seconds: float) -> float:
+        """Calculate exact pixel travel, accounting for if speed modifier expires mid-flight."""
+        mod = self.modifiers.get("speed")
+        if mod is None:
+            return self.speed * seconds
+        slowed = min(seconds, mod.duration)
+        return self.speed * (mod.multiplier * slowed + (seconds - slowed))
 
     def predict_pos(self, seconds: float) -> pygame.Vector2:
         """Simulate future position after *seconds* along the waypoint path.
@@ -131,11 +139,7 @@ class Enemy:
         Returns:
             Projected coordinate along the waypoint path.
         """
-        effective_speed = self.speed
-        if "speed" in self.modifiers:
-            effective_speed *= self.modifiers["speed"].multiplier
-
-        budget = effective_speed * seconds
+        budget = self._travel_budget(seconds)
         pos = pygame.Vector2(self.pos)
         wp_idx = self.waypoint_index
 
@@ -153,6 +157,9 @@ class Enemy:
                 budget = 0.0
 
         return pos
+
+    def apply_aura(self, world: World) -> None:
+        """Apply any persistent area-of-effect aura to the world."""
 
     # ------------------------------------------------------------------
     # Update
@@ -260,10 +267,7 @@ class RainCloud(Enemy):
     def predict_pos(self, seconds: float) -> pygame.Vector2:
         """Simulate future position flying directly toward final exit waypoint."""
         target = pygame.Vector2(*WAYPOINT_PIXELS[-1])
-        effective_speed = self.speed
-        if "speed" in self.modifiers:
-            effective_speed *= self.modifiers["speed"].multiplier
-        budget = effective_speed * seconds
+        budget = self._travel_budget(seconds)
         return self.pos.move_towards(target, budget)
 
     def update(self, dt: float, world: World) -> None:
@@ -321,16 +325,14 @@ class OshaInspector(Enemy):
     patience_cost: int = OSHA_INSPECTOR_PATIENCE
     aura_radius: float = OSHA_AURA_RADIUS
 
-    def update(self, dt: float, world: World) -> None:
-        """Traverse the path and radiate the Stop-Work Order disabling aura."""
-        super().update(dt, world)
-
+    def apply_aura(self, world: World) -> None:
+        """Radiate Stop-Work Order disabling aura to towers within 150px."""
+        if not self.alive:
+            return
         aura_sq = self.aura_radius ** 2
         for tower in world.towers.values():
-            if self.alive and self.pos.distance_squared_to(tower.center) <= aura_sq:
+            if self.pos.distance_squared_to(tower.center) <= aura_sq:
                 tower.is_disabled = True
-            else:
-                tower.is_disabled = False
 
     def draw(self, surface: pygame.Surface) -> None:
         """Render the OSHA inspector with safety helmet and Stop-Work aura ring."""

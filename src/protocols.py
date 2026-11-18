@@ -77,3 +77,14 @@ class Clickable(Protocol):
             ``True`` if the event was consumed; ``False`` to propagate.
         """
         ...
+
+
+@runtime_checkable
+class Projectile(Entity, Protocol):
+    """Protocol for active projectile entities.
+
+    Attributes:
+        alive: Whether the projectile is still active in flight.
+    """
+
+    alive: bool

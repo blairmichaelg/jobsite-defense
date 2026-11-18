@@ -1,12 +1,12 @@
 """Jobsite Defense — World context object.
 
-Phase 4 changes
+Phase 5 changes
 ---------------
-* Uses ``Tower`` base class and ``TOWER_TYPES`` registry for scalable tower management.
-* Added ``try_upgrade_tower(col, row) -> bool``: checks tier availability, deducts budget,
-  and invokes ``tower.upgrade()``.
-* Updated ``sell_tower(col, row)``: refunds 70% of total ``invested`` dollars
-  (including all purchase and upgrade expenditures).
+* Added ``refresh_auras()``: resets all tower disabled states and queries alive
+  enemies to apply persistent auras (e.g. OSHA Stop-Work Order).
+* ``try_build()`` reads canonical ``cls.COST`` from ``TOWER_TYPES``, ignoring
+  any unvalidated external price strings.
+* ``projectiles: list[Entity]`` polymorphic container accommodating globs and tarps.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from src.economy import Economy
 from src.enemy import Enemy
 from src.level import ROAD_CELLS
-from src.projectile import ConcreteGlob
+from src.protocols import Projectile
 from src.settings import GRID_COLS, GRID_ROWS
 from src.tower import TOWER_TYPES, Tower
 
@@ -30,7 +30,7 @@ class World:
 
     Attributes:
         enemies: All ``Enemy`` instances currently on the field.
-        projectiles: Active ballistic projectiles (e.g. ``ConcreteGlob``).
+        projectiles: Active ballistic and homing projectiles.
         towers: Spatial map of placed towers — ``{(col, row): Tower}``.
         economy: Shared economy tracking budget and patience.
         kill_bounty: Default fallback bounty amount.
@@ -38,7 +38,7 @@ class World:
     """
 
     enemies: list[Enemy] = field(default_factory=list)
-    projectiles: list[ConcreteGlob] = field(default_factory=list)
+    projectiles: list[Projectile] = field(default_factory=list)
     towers: dict[tuple[int, int], Tower] = field(default_factory=dict)
     economy: Economy = field(default_factory=Economy)
     kill_bounty: int = KILL_BOUNTY
@@ -61,17 +61,25 @@ class World:
         return amount
 
     # ------------------------------------------------------------------
+    # Aura State Management
+    # ------------------------------------------------------------------
+
+    def refresh_auras(self) -> None:
+        """Reset disabled state on all towers and reapply auras from alive enemies."""
+        for tower in self.towers.values():
+            tower.is_disabled = False
+        for enemy in self.enemies:
+            if enemy.alive:
+                enemy.apply_aura(self)
+
+    # ------------------------------------------------------------------
     # Tower Construction, Upgrades, & Liquidation
     # ------------------------------------------------------------------
 
     def try_build(self, col: int, row: int, cost: int, tower_type: str) -> bool:
         """Validate and construct a new tower at (col, row).
 
-        Validation checks:
-        1. Coordinates are inside grid boundaries.
-        2. Cell is not part of the road.
-        3. Cell is not already occupied by another tower.
-        4. Economy has sufficient budget for *cost*.
+        Reads canonical ``cls.COST`` from the tower class in ``TOWER_TYPES``.
         """
         if not (0 <= col < GRID_COLS and 0 <= row < GRID_ROWS):
             return False
@@ -79,19 +87,21 @@ class World:
             return False
         if (col, row) in self.towers:
             return False
-        if not self.economy.can_afford(cost):
-            return False
 
         norm_type = tower_type.lower().replace(" ", "").replace("_", "")
         cls = TOWER_TYPES.get(norm_type) or TOWER_TYPES.get(tower_type.lower())
         if cls is None:
             return False
 
-        if not self.economy.spend(cost):
+        actual_cost = cls.COST
+        if not self.economy.can_afford(actual_cost):
+            return False
+
+        if not self.economy.spend(actual_cost):
             return False
 
         tower = cls(col=col, row=row)
-        tower.invested = cost
+        tower.invested = actual_cost
         self.towers[(col, row)] = tower
         return True
 

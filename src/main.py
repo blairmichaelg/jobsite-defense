@@ -1,21 +1,23 @@
 """Jobsite Defense — main entry point and game loop.
 
-Phase 4 changes
+Phase 5 changes
 ---------------
-* Added ``GameState`` enum (``PLAYING``, ``GAME_OVER``, ``VICTORY``).
-* End-state overlays: "YOU'RE FIRED!" on patience depletion;
-  "CONTRACT COMPLETE!" on wave campaign completion.
-* Clean termination on ESC without invoking ``sys.exit()``.
-* Leaked enemies deduct archetype-specific ``enemy.patience_cost`` (20 for OSHA boss).
+* Added ``GameState.MAIN_MENU``: boots into a title screen prompting for ENTER to start.
+* Cached overlay surfaces for Main Menu, Game Over, and Victory to avoid per-frame allocations.
+* Clears active clickables when ``game_state != GameState.PLAYING``.
+* Added ``R`` key restart handler to re-initialize game state without process restarts.
+* Invokes ``world.refresh_auras()`` immediately after the dead-enemy cull pass.
 """
 
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 
 import pygame
 
 from src.economy import Economy
+from src.level import load_level
 from src.protocols import Clickable, Entity
 from src.render import build_static_layer
 from src.settings import (
@@ -36,6 +38,7 @@ from src.world import World
 class GameState(Enum):
     """Overall gameplay session state."""
 
+    MAIN_MENU = "MAIN_MENU"
     PLAYING = "PLAYING"
     GAME_OVER = "GAME_OVER"
     VICTORY = "VICTORY"
@@ -71,16 +74,40 @@ def _build_entity_list(
     )
 
 
+def _build_screen_overlay(
+    bg_rgba: tuple[int, int, int, int],
+    title_text: str,
+    title_color: tuple[int, int, int],
+    sub_text: str,
+    sub_color: tuple[int, int, int],
+    title_font: pygame.font.Font,
+    sub_font: pygame.font.Font,
+) -> pygame.Surface:
+    """Pre-render and bake a static modal overlay surface."""
+    surf = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+    surf.fill(bg_rgba)
+
+    t_rendered = title_font.render(title_text, True, title_color)
+    s_rendered = sub_font.render(sub_text, True, sub_color)
+
+    surf.blit(
+        t_rendered,
+        t_rendered.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 25)),
+    )
+    surf.blit(
+        s_rendered,
+        s_rendered.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 30)),
+    )
+    return surf
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 def main() -> None:
-    """Run the Jobsite Defense Phase 4 game loop."""
-    # ------------------------------------------------------------------
-    # Initialisation
-    # ------------------------------------------------------------------
+    """Run the Jobsite Defense Phase 5 game loop."""
     pygame.init()
 
     screen = pygame.display.set_mode(
@@ -94,23 +121,58 @@ def main() -> None:
     label_font = pygame.font.Font(None, 20)
     hud_font = pygame.font.Font(None, 22)
     banner_font = pygame.font.Font(None, 56)
-    sub_banner_font = pygame.font.Font(None, 26)
+    sub_banner_font = pygame.font.Font(None, 24)
 
     static_layer = build_static_layer(label_font)
 
-    # --- World & Systems -------------------------------------------------
-    world = World(economy=Economy())
-    wave_manager = WaveManager()
-    game_state = GameState.PLAYING
+    # Pre-render modal overlay surfaces outside game loop
+    menu_overlay = _build_screen_overlay(
+        (20, 25, 20, 200),
+        "Jobsite Defense",
+        (240, 220, 100),
+        "Press ENTER to start The Foundation",
+        (220, 230, 220),
+        banner_font,
+        sub_banner_font,
+    )
 
-    # --- Radial menu (Clickable UI) --------------------------------------
+    game_over_overlay = _build_screen_overlay(
+        (35, 0, 0, 200),
+        "YOU'RE FIRED!",
+        (240, 60, 60),
+        "The client ran out of patience. (Press R to restart, ESC to exit)",
+        (220, 200, 200),
+        banner_font,
+        sub_banner_font,
+    )
+
+    victory_overlay = _build_screen_overlay(
+        (0, 35, 0, 200),
+        "CONTRACT COMPLETE!",
+        (80, 230, 80),
+        "Jobsite defended on schedule and under budget! (Press R to restart, ESC to exit)",
+        (200, 240, 200),
+        banner_font,
+        sub_banner_font,
+    )
+
+    # Level loading & state setup
+    level_path = Path("levels/level_1.json")
+    level_data = load_level(str(level_path)) if level_path.exists() else None
+
+    world = World(economy=Economy())
+    wave_manager = (
+        WaveManager(waves=level_data.waves)
+        if level_data
+        else WaveManager()
+    )
+    game_state = GameState.MAIN_MENU
+
     menu = RadialMenu()
     menu.configure(world)
-
-    # --- Entity list -----------------------------------------------------
     entities: list[Entity] = _build_entity_list(world, menu, wave_manager)
 
-    # --- HUD cache -------------------------------------------------------
+    # HUD cache
     prev_budget = world.economy.project_budget
 
     def _rebuild_hud() -> list[pygame.Surface]:
@@ -132,19 +194,35 @@ def main() -> None:
     hud_surfaces = _rebuild_hud()
     hud_timer = _HUD_REFRESH_INTERVAL
 
+    def _reset_game() -> None:
+        nonlocal world, wave_manager, menu, entities, game_state, prev_budget, hud_surfaces
+        world = World(economy=Economy())
+        wave_manager = (
+            WaveManager(waves=level_data.waves)
+            if level_data
+            else WaveManager()
+        )
+        menu = RadialMenu()
+        menu.configure(world)
+        entities = _build_entity_list(world, menu, wave_manager)
+        prev_budget = world.economy.project_budget
+        hud_surfaces = _rebuild_hud()
+        game_state = GameState.PLAYING
+
     # ------------------------------------------------------------------
-    # Game loop
+    # Game Loop
     # ------------------------------------------------------------------
     running = True
     while running:
-        # 1. Clamped variable time-step
         dt = min(clock.tick(TARGET_FPS) / 1000.0, _DT_MAX)
 
-        # 2. Events — Clickables consume first; unhandled ESC quits
         raw_events = pygame.event.get()
         clickables: list[Clickable] = [
             e for e in reversed(entities) if isinstance(e, Clickable)
         ]
+        if game_state != GameState.PLAYING:
+            clickables = []
+
         for event in raw_events:
             if event.type == pygame.QUIT:
                 running = False
@@ -152,14 +230,25 @@ def main() -> None:
 
             consumed = any(c.handle_event(event) for c in clickables)
 
-            if not consumed and event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
-                break
+            if not consumed and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                    break
+                if event.key == pygame.K_RETURN and game_state == GameState.MAIN_MENU:
+                    _reset_game()
+                    break
+                if event.key == pygame.K_r and game_state in (
+                    GameState.GAME_OVER,
+                    GameState.VICTORY,
+                    GameState.PLAYING,
+                ):
+                    _reset_game()
+                    break
 
         if not running:
             break
 
-        # 3. Simulation (only if actively playing)
+        # Simulation pass
         earned = 0
         patience_changed = False
 
@@ -178,16 +267,17 @@ def main() -> None:
             world.enemies[:] = [e for e in world.enemies if e.alive]
             world.projectiles[:] = [p for p in world.projectiles if p.alive]
 
-            # Check game-over / victory conditions
+            # Re-evaluate all persistent enemy auras
+            world.refresh_auras()
+
             if world.economy.game_over:
                 game_state = GameState.GAME_OVER
             elif wave_manager.state == WaveState.VICTORY and not world.enemies:
                 game_state = GameState.VICTORY
 
-        # 4. Rebuild entity list
         entities = _build_entity_list(world, menu, wave_manager)
 
-        # 5. HUD — throttled refresh + immediate on stat change
+        # HUD Refresh
         hud_timer -= dt
         budget_changed = world.economy.project_budget != prev_budget
         if hud_timer <= 0.0 or budget_changed or patience_changed or earned > 0:
@@ -195,51 +285,24 @@ def main() -> None:
             hud_timer = _HUD_REFRESH_INTERVAL
             prev_budget = world.economy.project_budget
 
-        # 6. Render (back → front)
+        # Rendering
         screen.blit(static_layer, (0, 0))
         for ent in entities:
             ent.draw(screen)
 
-        # 7. HUD overlay (top-left)
         for i, surf in enumerate(hud_surfaces):
             screen.blit(surf, (_HUD_X, _HUD_Y + i * _HUD_LINE_H))
 
-        # 8. End-state Banners
-        if game_state == GameState.GAME_OVER:
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((30, 0, 0, 190))
-            screen.blit(overlay, (0, 0))
-
-            title = banner_font.render("YOU'RE FIRED!", True, (240, 60, 60))
-            screen.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 25)))
-
-            sub = sub_banner_font.render(
-                "The client ran out of patience. (Press ESC to exit)",
-                True,
-                (220, 200, 200),
-            )
-            screen.blit(sub, sub.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 25)))
-
+        # Modals
+        if game_state == GameState.MAIN_MENU:
+            screen.blit(menu_overlay, (0, 0))
+        elif game_state == GameState.GAME_OVER:
+            screen.blit(game_over_overlay, (0, 0))
         elif game_state == GameState.VICTORY:
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 30, 0, 190))
-            screen.blit(overlay, (0, 0))
-
-            title = banner_font.render("CONTRACT COMPLETE!", True, (80, 230, 80))
-            screen.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 25)))
-
-            sub = sub_banner_font.render(
-                "Jobsite defended on schedule and under budget! (Press ESC to exit)",
-                True,
-                (200, 240, 200),
-            )
-            screen.blit(sub, sub.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 25)))
+            screen.blit(victory_overlay, (0, 0))
 
         pygame.display.flip()
 
-    # ------------------------------------------------------------------
-    # Clean Shutdown without sys.exit()
-    # ------------------------------------------------------------------
     pygame.quit()
 
 

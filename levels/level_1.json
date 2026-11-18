@@ -1,0 +1,8 @@
+{
+  "name": "The Foundation",
+  "waypoints": [[-1, 1], [6, 1], [6, 8], [16, 8]],
+  "powerups": {"4,0": ["attack_speed", 1.25]},
+  "waves": [
+    {"enemy": "Rotted2x4", "count": 10, "interval": 1.0}
+  ]
+}
