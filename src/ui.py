@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 import pygame
 
 from src.grid import cell_rect
-from src.level import ROAD_CELLS
 from src.protocols import Clickable, Entity
 from src.settings import (
     CELL_SIZE,
@@ -227,9 +226,9 @@ class RadialMenu:
 
         if not (0 <= col < WINDOW_WIDTH // CELL_SIZE and 0 <= row < WINDOW_HEIGHT // CELL_SIZE):
             return False
-        if (col, row) in ROAD_CELLS:
-            return False
         if self._world is None:
+            return False
+        if (col, row) in self._world.level.road_cells:
             return False
 
         self._cell = (col, row)

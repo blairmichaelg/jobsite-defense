@@ -118,23 +118,51 @@ class TarpProjectile:
         target: The specific ``Enemy`` being tracked.
         speed: Flight velocity in pixels per second (default 400).
         damage: Direct impact damage (default 10 HP).
-        alive: Becomes ``False`` on impact; culled by the game loop.
+        slow_multiplier: Speed debuff applied to flying targets (Tier 2).
+        slow_duration: Duration of speed debuff in seconds.
+        stun_duration: Incapacitation duration applied to targets (Tier 3).
+        alive: Becomes ``False`` on impact or lost target; culled by the game loop.
         layer: Render/update layer — projectiles sit at layer 30.
     """
 
     pos: pygame.Vector2
-    target: Enemy
+    target: Enemy | None
     speed: float = 400.0
     damage: float = 10.0
+    slow_multiplier: float | None = None
+    slow_duration: float = 3.0
+    stun_duration: float | None = None
     alive: bool = True
     layer: int = 30
 
+    def _retarget(self, world: World) -> None:
+        """Find the closest living enemy if current target dies mid-flight."""
+        living = [e for e in world.enemies if e.alive]
+        if not living:
+            self.alive = False
+            self.target = None
+            return
+
+        closest: Enemy | None = None
+        min_sq = float("inf")
+        for e in living:
+            dist_sq = self.pos.distance_squared_to(e.pos)
+            if dist_sq < min_sq:
+                min_sq = dist_sq
+                closest = e
+        self.target = closest
+
     def update(self, dt: float, world: World) -> None:
-        """Advance toward current target position; detonate on impact."""
+        """Advance toward current target position; retarget if needed; detonate on impact."""
         if not self.alive:
             return
 
-        dest = self.target.pos if self.target.alive else self.pos
+        if self.target is None or not self.target.alive:
+            self._retarget(world)
+            if not self.alive or self.target is None:
+                return
+
+        dest = self.target.pos
         dist = self.pos.distance_to(dest)
         step = self.speed * dt
 
@@ -144,6 +172,17 @@ class TarpProjectile:
             if self.target.alive:
                 was_alive = self.target.alive
                 self.target.take_damage(self.damage)
+
+                # Tier 2 Sticky Resin: 0.3x slow to flying enemies
+                if self.slow_multiplier is not None and self.target.is_flying:
+                    self.target.apply_speed_modifier(
+                        self.slow_multiplier, self.slow_duration
+                    )
+
+                # Tier 3 EMP Net: 1.5s stun to targets
+                if self.stun_duration is not None:
+                    self.target.apply_stun(self.stun_duration)
+
                 if was_alive and not self.target.alive:
                     world.request_earn(self.target.bounty)
         else:

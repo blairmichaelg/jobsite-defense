@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING, ClassVar
 import pygame
 
 from src.grid import cell_rect
-from src.level import POWERUP_TILES
 from src.projectile import ConcreteGlob
 from src.protocols import Clickable, Entity
 from src.settings import (
@@ -46,7 +45,20 @@ from src.settings import (
     NAIL_GUNNER_RANGE,
     NAIL_GUNNER_TIER2_COST,
     NAIL_GUNNER_TIER3_COST,
+    TARP_CANNON_TIER2_COST,
+    TARP_CANNON_TIER3_COST,
 )
+
+
+def _get_powerup_for_cell(col: int, row: int) -> tuple[str, float] | None:
+    """Lazy lookup of powerup tile from level_1 for backwards compatibility."""
+    try:
+        from src.level import load_level
+
+        return load_level("level_1.json").powerup_tiles.get((col, row))
+    except Exception:
+        return None
+
 
 if TYPE_CHECKING:
     from src.enemy import Enemy
@@ -85,6 +97,7 @@ class Tower:
     upgrade_level: int = 1
     can_target_air: bool = False
     is_disabled: bool = False
+    powerup_tile: tuple[str, float] | None = None
     selected: bool = field(default=False, init=False)
     layer: int = field(default=20, init=False)
 
@@ -118,7 +131,7 @@ class Tower:
         self.effective_damage = self.base_damage
         self.effective_cooldown = self.cooldown_max
 
-        tile = POWERUP_TILES.get((self.col, self.row))
+        tile = self.powerup_tile or _get_powerup_for_cell(self.col, self.row)
         if tile is not None:
             effect, multiplier = tile
             if effect == "range":
@@ -496,6 +509,34 @@ class TarpCannon(Tower):
     cooldown_max: float = 0.3
     can_target_air: bool = True
 
+    @property
+    def next_upgrade_cost(self) -> int | None:
+        if self.upgrade_level == 1:
+            return TARP_CANNON_TIER2_COST
+        if self.upgrade_level == 2:
+            return TARP_CANNON_TIER3_COST
+        return None
+
+    @property
+    def next_upgrade_name(self) -> str | None:
+        if self.upgrade_level == 1:
+            return "Sticky Resin"
+        if self.upgrade_level == 2:
+            return "EMP Net"
+        return None
+
+    def upgrade(self) -> None:
+        """Apply Tier 2 Sticky Resin or Tier 3 EMP Net upgrade."""
+        cost = self.next_upgrade_cost
+        if cost is None:
+            return
+        if self.upgrade_level == 1:
+            self.upgrade_level = 2
+        elif self.upgrade_level == 2:
+            self.upgrade_level = 3
+        self.invested += cost
+        self._apply_modifiers()
+
     def _nearest_enemy(self, enemies: list[Enemy]) -> Enemy | None:
         """Prioritize flying enemies; target ground creeps only if no flyers in range."""
         flyers = [e for e in enemies if e.alive and e.is_flying]
@@ -528,10 +569,15 @@ class TarpCannon(Tower):
 
         from src.projectile import TarpProjectile
 
+        slow_mult = 0.3 if self.upgrade_level >= 2 else None
+        stun_dur = 1.5 if self.upgrade_level >= 3 else None
+
         tarp = TarpProjectile(
             pos=pygame.Vector2(self.center),
             target=target,
             damage=self.effective_damage,
+            slow_multiplier=slow_mult,
+            stun_duration=stun_dur,
         )
         world.projectiles.append(tarp)
         self._cooldown_remaining = self.effective_cooldown

@@ -41,11 +41,13 @@ class WaveSpec:
         enemy: The enemy subclass to instantiate.
         count: Number of enemies to spawn.
         interval: Delay between consecutive spawns in seconds.
+        path: Key of the navigational path in level.paths (default "main").
     """
 
     enemy: type[Enemy]
     count: int
     interval: float
+    path: str = "main"
 
 
 # Default campaign wave progression
@@ -120,7 +122,20 @@ class WaveManager:
             if self.spawn_timer <= 0.0 and self.spawned_count < current_wave.count:
                 self.spawn_timer = current_wave.interval
                 self.spawned_count += 1
-                world.enemies.append(current_wave.enemy())
+
+                route_pixels: tuple[tuple[float, float], ...] = ()
+                if world.level and world.level.paths:
+                    path_data = world.level.paths.get(current_wave.path) or world.level.primary_path
+                    route_pixels = path_data.pixels
+
+                spawn_pos = (
+                    pygame.Vector2(*route_pixels[0])
+                    if route_pixels
+                    else pygame.Vector2(0, 0)
+                )
+                world.enemies.append(
+                    current_wave.enemy(pos=spawn_pos, path=route_pixels)
+                )
 
                 if self.spawned_count >= current_wave.count:
                     self.state = WaveState.ACTIVE

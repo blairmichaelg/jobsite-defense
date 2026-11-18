@@ -1,24 +1,27 @@
 """Jobsite Defense — World context object.
 
-Phase 5 changes
----------------
-* Added ``refresh_auras()``: resets all tower disabled states and queries alive
-  enemies to apply persistent auras (e.g. OSHA Stop-Work Order).
-* ``try_build()`` reads canonical ``cls.COST`` from ``TOWER_TYPES``, ignoring
-  any unvalidated external price strings.
-* ``projectiles: list[Entity]`` polymorphic container accommodating globs and tarps.
+Phase 6 changes:
+- Decoupled level geometry: World owns `level: LevelData`.
+- Meta-progression integration: World holds `save_data: SaveData`.
+- Perk application: `apply_perks()` buffs newly built towers (e.g. better_ammo)
+  and grants starting budget bonuses (union_dues).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from src.economy import Economy
 from src.enemy import Enemy
-from src.level import ROAD_CELLS
+from src.level import LevelData, load_level
 from src.protocols import Projectile
+from src.save import SaveData
 from src.settings import GRID_COLS, GRID_ROWS
 from src.tower import TOWER_TYPES, Tower
+
+if TYPE_CHECKING:
+    pass
 
 KILL_BOUNTY: int = 15
 """Default dollars awarded per enemy killed."""
@@ -29,20 +32,29 @@ class World:
     """Shared game-state context passed to every ``Entity.update``.
 
     Attributes:
+        level: Active level layout and geometry.
         enemies: All ``Enemy`` instances currently on the field.
         projectiles: Active ballistic and homing projectiles.
         towers: Spatial map of placed towers — ``{(col, row): Tower}``.
         economy: Shared economy tracking budget and patience.
+        save_data: Active meta-progression state and unlocked perks.
         kill_bounty: Default fallback bounty amount.
         _pending_earn: Accumulated bounties to pay out this frame.
     """
 
+    level: LevelData = field(default_factory=lambda: load_level("level_1.json"))
     enemies: list[Enemy] = field(default_factory=list)
     projectiles: list[Projectile] = field(default_factory=list)
     towers: dict[tuple[int, int], Tower] = field(default_factory=dict)
     economy: Economy = field(default_factory=Economy)
+    save_data: SaveData = field(default_factory=SaveData)
     kill_bounty: int = KILL_BOUNTY
     _pending_earn: int = field(default=0, init=False)
+
+    def __post_init__(self) -> None:
+        """Apply passive starting perks (e.g. Union Dues starting cash)."""
+        if "union_dues" in self.save_data.perks:
+            self.economy.project_budget += 250
 
     # ------------------------------------------------------------------
     # Economy & Bounty Queue
@@ -73,6 +85,18 @@ class World:
                 enemy.apply_aura(self)
 
     # ------------------------------------------------------------------
+    # Meta-Progression & Perks
+    # ------------------------------------------------------------------
+
+    def apply_perks(self, tower: Tower) -> None:
+        """Apply active meta-progression perks to newly placed tower."""
+        from src.tower import NailGunner
+
+        if "better_ammo" in self.save_data.perks and isinstance(tower, NailGunner):
+            tower.base_damage += 5.0
+            tower._apply_modifiers()
+
+    # ------------------------------------------------------------------
     # Tower Construction, Upgrades, & Liquidation
     # ------------------------------------------------------------------
 
@@ -83,7 +107,7 @@ class World:
         """
         if not (0 <= col < GRID_COLS and 0 <= row < GRID_ROWS):
             return False
-        if (col, row) in ROAD_CELLS:
+        if (col, row) in self.level.road_cells:
             return False
         if (col, row) in self.towers:
             return False
@@ -100,8 +124,10 @@ class World:
         if not self.economy.spend(actual_cost):
             return False
 
-        tower = cls(col=col, row=row)
+        powerup = self.level.powerup_tiles.get((col, row))
+        tower = cls(col=col, row=row, powerup_tile=powerup)
         tower.invested = actual_cost
+        self.apply_perks(tower)
         self.towers[(col, row)] = tower
         return True
 

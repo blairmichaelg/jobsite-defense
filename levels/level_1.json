@@ -1,8 +1,31 @@
 {
   "name": "The Foundation",
-  "waypoints": [[-1, 1], [6, 1], [6, 8], [16, 8]],
-  "powerups": {"4,0": ["attack_speed", 1.25]},
+  "paths": {
+    "main": [
+      [-1, 1],
+      [6, 1],
+      [6, 4],
+      [2, 4],
+      [2, 7],
+      [9, 7],
+      [9, 4],
+      [13, 4],
+      [13, 10],
+      [16, 10]
+    ]
+  },
+  "powerups": {
+    "4,0": ["attack_speed", 1.25],
+    "8,3": ["range", 1.25],
+    "11,6": ["damage", 1.5],
+    "1,6": ["attack_speed", 1.25],
+    "14,9": ["range", 1.25]
+  },
   "waves": [
-    {"enemy": "Rotted2x4", "count": 10, "interval": 1.0}
+    {"enemy": "Rotted2x4", "count": 6, "interval": 1.0, "path": "main"},
+    {"enemy": "HOABoardMember", "count": 16, "interval": 0.25, "path": "main"},
+    {"enemy": "RainCloud", "count": 4, "interval": 1.5, "path": "main"},
+    {"enemy": "Rotted2x4", "count": 10, "interval": 0.7, "path": "main"},
+    {"enemy": "OshaInspector", "count": 1, "interval": 1.0, "path": "main"}
   ]
 }

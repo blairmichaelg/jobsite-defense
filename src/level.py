@@ -1,18 +1,14 @@
-"""Jobsite Defense — level data: waypoints, road cells, and power-up tiles.
+"""Jobsite Defense — level data: declarative JSON loading and geometry.
 
-Phase 5 additions
------------------
-* JSON Level Loader: ``load_level(filepath: str) -> LevelData`` parses declarative
-  level files, computes road rasters, waypoint pixels, power-up maps, and typed waves.
-* ``LevelData`` dataclass holding all environment specifications.
-* Retains default module-level constants (``WAYPOINTS``, ``ROAD_CELLS``,
-  ``WAYPOINT_PIXELS``, ``POWERUP_TILES``) for backwards compatibility.
+Phase 6: Decoupled JSON loading with multi-path routing support,
+strict validation (LevelError), and path-relative resolution.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.settings import CELL_SIZE, GRID_COLS
@@ -23,25 +19,65 @@ if TYPE_CHECKING:
     from src.wave import WaveSpec
 
 
+LEVELS_DIR = Path(__file__).resolve().parent.parent / "levels"
+
+
+class LevelError(Exception):
+    """Raised when level JSON cannot be found, parsed, or fails validation."""
+
+
 # ---------------------------------------------------------------------------
-# LevelData Container
+# Path & Level Data Containers
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PathData:
+    """A single creep navigational route defined in grid and pixel coordinates.
+
+    Attributes:
+        waypoints: Ordered grid coordinates ``(col, row)`` including off-screen spawn/exit.
+        pixels: Pre-computed pixel center coordinates ``(x, y)`` for each waypoint.
+    """
+
+    waypoints: tuple[tuple[int, int], ...]
+    pixels: tuple[tuple[float, float], ...]
+
 
 @dataclass(frozen=True)
 class LevelData:
-    """Parsed level specifications and pre-calculated geometry."""
+    """Fully parsed level specification with multi-path geometry and power-ups."""
 
     name: str
-    waypoints: tuple[tuple[int, int], ...]
-    waypoint_pixels: tuple[tuple[float, float], ...]
+    paths: dict[str, PathData]
     road_cells: frozenset[tuple[int, int]]
     powerup_tiles: dict[tuple[int, int], tuple[str, float]]
     waves: list[WaveSpec]
+
+    @property
+    def primary_path(self) -> PathData:
+        """Return the 'main' path or the first defined path."""
+        if "main" in self.paths:
+            return self.paths["main"]
+        if self.paths:
+            return next(iter(self.paths.values()))
+        raise LevelError(f"Level '{self.name}' defines no paths.")
+
+    @property
+    def waypoints(self) -> tuple[tuple[int, int], ...]:
+        """Convenience accessor for primary path waypoints."""
+        return self.primary_path.waypoints
+
+    @property
+    def waypoint_pixels(self) -> tuple[tuple[float, float], ...]:
+        """Convenience accessor for primary path pixel coordinates."""
+        return self.primary_path.pixels
 
 
 # ---------------------------------------------------------------------------
 # Path & Raster Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_road(wps: tuple[tuple[int, int], ...]) -> frozenset[tuple[int, int]]:
     """Rasterise waypoints into a frozenset of on-grid (col, row) cells.
@@ -74,9 +110,7 @@ def _build_road(wps: tuple[tuple[int, int], ...]) -> frozenset[tuple[int, int]]:
             raise ValueError(
                 f"Diagonal segment ({c1},{r1})→({c2},{r2}) is not supported."
             )
-    return frozenset(
-        (c, r) for (c, r) in cells if 0 <= c < GRID_COLS
-    )
+    return frozenset((c, r) for (c, r) in cells if 0 <= c < GRID_COLS)
 
 
 def _waypoint_pixels(
@@ -86,32 +120,48 @@ def _waypoint_pixels(
 
     Returns immutable primitive tuples rather than ``pygame.Vector2``
     objects to prevent accidental shared-state mutation.
-
-    Args:
-        wps: Grid-coordinate waypoints including off-screen entries.
-
-    Returns:
-        Tuple of ``(px_x, px_y)`` float pairs, one per waypoint.
     """
     half = CELL_SIZE / 2.0
-    return tuple(
-        (col * CELL_SIZE + half, row * CELL_SIZE + half)
-        for col, row in wps
-    )
+    return tuple((col * CELL_SIZE + half, row * CELL_SIZE + half) for col, row in wps)
 
 
 # ---------------------------------------------------------------------------
-# JSON Level Loader
+# Level File Resolution & Loader
 # ---------------------------------------------------------------------------
 
-def load_level(filepath: str) -> LevelData:
+
+def _resolve_level_path(filepath: str | Path) -> Path:
+    """Resolve a level filepath using ``__file__`` based relative pathing to ``levels/``."""
+    p = Path(filepath)
+    if p.is_file():
+        return p
+
+    # Check relative to LEVELS_DIR
+    in_levels = LEVELS_DIR / p.name
+    if in_levels.is_file():
+        return in_levels
+
+    # Check with added .json extension
+    if not p.name.endswith(".json"):
+        with_json = LEVELS_DIR / f"{p.name}.json"
+        if with_json.is_file():
+            return with_json
+
+    return p
+
+
+def load_level(filepath: str | Path) -> LevelData:
     """Parse a declarative level JSON file and construct dynamic geometry.
 
     Args:
-        filepath: Filesystem path to the JSON level specification.
+        filepath: Filesystem path or name of the JSON level specification.
 
     Returns:
-        A fully initialized, immutable ``LevelData`` container.
+        A fully initialized, validated, immutable ``LevelData`` container.
+
+    Raises:
+        LevelError: If the file cannot be read, JSON is malformed, any path
+                    has < 2 points, or any power-up tile overlaps a road cell.
     """
     from src.enemy import HOABoardMember, OshaInspector, RainCloud, Rotted2x4
     from src.wave import WaveSpec
@@ -123,23 +173,65 @@ def load_level(filepath: str) -> LevelData:
         "oshainspector": OshaInspector,
     }
 
-    with open(filepath, encoding="utf-8") as f:
-        data = json.load(f)
+    resolved_path = _resolve_level_path(filepath)
+    if not resolved_path.is_file():
+        raise LevelError(f"Level file not found: {filepath} (resolved: {resolved_path})")
+
+    try:
+        content = resolved_path.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except Exception as e:
+        raise LevelError(f"Failed to read or parse level JSON '{resolved_path}': {e}") from e
 
     name: str = data.get("name", "Unnamed Level")
 
-    # Parse waypoints
-    raw_wps = data.get("waypoints", [])
-    wps: tuple[tuple[int, int], ...] = tuple((int(pt[0]), int(pt[1])) for pt in raw_wps)
-    road_cells = _build_road(wps)
-    waypoint_pixels = _waypoint_pixels(wps)
+    # Parse paths
+    raw_paths: dict[str, list[list[int]]] = {}
+    if "paths" in data and isinstance(data["paths"], dict):
+        raw_paths = data["paths"]
+    elif "waypoints" in data and isinstance(data["waypoints"], list):
+        raw_paths = {"main": data["waypoints"]}
+    else:
+        raise LevelError(f"Level '{name}' defines no valid 'paths' or 'waypoints'.")
+
+    paths: dict[str, PathData] = {}
+    all_road_cells: set[tuple[int, int]] = set()
+
+    for path_name, raw_wps in raw_paths.items():
+        if len(raw_wps) < 2:
+            raise LevelError(
+                f"Path '{path_name}' in level '{name}' has less than 2 points ({len(raw_wps)}). "
+                "Each path must have at least 2 points."
+            )
+        try:
+            wps: tuple[tuple[int, int], ...] = tuple((int(pt[0]), int(pt[1])) for pt in raw_wps)
+            road = _build_road(wps)
+        except ValueError as ve:
+            raise LevelError(f"Invalid path '{path_name}' in level '{name}': {ve}") from ve
+
+        pixels = _waypoint_pixels(wps)
+        paths[path_name] = PathData(waypoints=wps, pixels=pixels)
+        all_road_cells.update(road)
+
+    road_cells = frozenset(all_road_cells)
 
     # Parse powerups: {"4,0": ["attack_speed", 1.25]}
     raw_powerups = data.get("powerups", {})
     powerup_tiles: dict[tuple[int, int], tuple[str, float]] = {}
     for key, val in raw_powerups.items():
-        parts = [int(p.strip()) for p in key.split(",")]
-        powerup_tiles[(parts[0], parts[1])] = (str(val[0]), float(val[1]))
+        try:
+            parts = [int(p.strip()) for p in key.split(",")]
+            cell = (parts[0], parts[1])
+            powerup_tiles[cell] = (str(val[0]), float(val[1]))
+        except Exception as e:
+            raise LevelError(f"Malformed power-up entry '{key}': {val}") from e
+
+    # Validation: Power-ups must not overlap road cells
+    overlap = frozenset(powerup_tiles) & road_cells
+    if overlap:
+        raise LevelError(
+            f"Power-up tile(s) overlap road cells in level '{name}': {sorted(overlap)}"
+        )
 
     # Parse waves
     raw_waves = data.get("waves", [])
@@ -147,60 +239,27 @@ def load_level(filepath: str) -> LevelData:
     for w in raw_waves:
         enemy_str = str(w.get("enemy", "Rotted2x4")).lower().replace(" ", "").replace("_", "")
         enemy_cls = enemy_registry.get(enemy_str, Rotted2x4)
+        path_name = str(w.get("path", "main"))
         waves.append(
             WaveSpec(
                 enemy=enemy_cls,
                 count=int(w.get("count", 1)),
                 interval=float(w.get("interval", 1.0)),
+                path=path_name,
             )
         )
 
     return LevelData(
         name=name,
-        waypoints=wps,
-        waypoint_pixels=waypoint_pixels,
+        paths=paths,
         road_cells=road_cells,
         powerup_tiles=powerup_tiles,
         waves=waves,
     )
 
 
-# ---------------------------------------------------------------------------
-# Default Campaign Level 1 (Backwards Compatibility)
-# ---------------------------------------------------------------------------
-
-WAYPOINTS: tuple[tuple[int, int], ...] = (
-    (-1, 1),   # spawn — off-screen left
-    (6,  1),   # turn south
-    (6,  4),   # turn west
-    (2,  4),   # turn south
-    (2,  7),   # turn east
-    (9,  7),   # turn north
-    (9,  4),   # turn east
-    (13, 4),   # turn south
-    (13, 10),  # turn east
-    (16, 10),  # exit — off-screen right
-)
-
-ROAD_CELLS: frozenset[tuple[int, int]] = _build_road(WAYPOINTS)
-WAYPOINT_PIXELS: tuple[tuple[float, float], ...] = _waypoint_pixels(WAYPOINTS)
-
-POWERUP_TILES: dict[tuple[int, int], tuple[str, float]] = {
-    (4,  0):  ("attack_speed", 1.25),
-    (8,  3):  ("range",        1.25),
-    (11, 6):  ("damage",       1.50),
-    (1,  6):  ("attack_speed", 1.25),
-    (14, 9):  ("range",        1.25),
-}
-
-_overlap = frozenset(POWERUP_TILES) & ROAD_CELLS
-if _overlap:
-    raise RuntimeError(
-        f"Power-up tile(s) overlap road cells — fix level data: {sorted(_overlap)}"
-    )
-
 POWERUP_LABELS: dict[str, str] = {
     "attack_speed": "SPD",
-    "damage":       "DMG",
-    "range":        "RNG",
+    "damage": "DMG",
+    "range": "RNG",
 }

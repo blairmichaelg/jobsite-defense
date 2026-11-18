@@ -9,8 +9,16 @@ import pygame
 import pytest
 
 from src.economy import Economy
-from src.enemy import Enemy, HOABoardMember, OshaInspector, RainCloud, Rotted2x4, SpeedModifier
-from src.level import WAYPOINT_PIXELS
+from src.enemy import (
+    Enemy,
+    HOABoardMember,
+    OshaInspector,
+    RainCloud,
+    Rotted2x4,
+    SpeedModifier,
+    StunModifier,
+)
+from src.level import load_level
 from src.settings import (
     ENEMY_SPEED,
     OSHA_INSPECTOR_HEALTH,
@@ -22,7 +30,9 @@ from src.settings import (
 from src.tower import NailGunner
 from src.world import World
 
-_DUMMY_WORLD = World()
+_DEFAULT_LEVEL = load_level("level_1.json")
+WAYPOINT_PIXELS = _DEFAULT_LEVEL.waypoint_pixels
+_DUMMY_WORLD = World(level=_DEFAULT_LEVEL)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -169,11 +179,15 @@ class TestPredictionAndModifiers:
         """A 0.2x debuff overwrites an existing 0.5x debuff."""
         e = Enemy()
         e.apply_speed_modifier(mult=0.5, dur=3.0)
-        assert e.modifiers["speed"].multiplier == 0.5
+        mod1 = e.modifiers["speed"]
+        assert isinstance(mod1, SpeedModifier)
+        assert mod1.multiplier == 0.5
 
         e.apply_speed_modifier(mult=0.2, dur=2.0)
-        assert e.modifiers["speed"].multiplier == 0.2
-        assert e.modifiers["speed"].duration == 2.0
+        mod2 = e.modifiers["speed"]
+        assert isinstance(mod2, SpeedModifier)
+        assert mod2.multiplier == 0.2
+        assert mod2.duration == 2.0
 
     def test_apply_speed_modifier_takes_max_duration_if_equal(self) -> None:
         """Applying the same multiplier extends the duration to max(current, dur)."""
@@ -190,7 +204,9 @@ class TestPredictionAndModifiers:
         e = Enemy()
         e.apply_speed_modifier(mult=0.5, dur=3.0)
         e.apply_speed_modifier(mult=0.8, dur=5.0)
-        assert e.modifiers["speed"].multiplier == 0.5
+        mod = e.modifiers["speed"]
+        assert isinstance(mod, SpeedModifier)
+        assert mod.multiplier == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -222,8 +238,8 @@ class TestPhase4Archetypes:
         assert cloud.health == RAIN_CLOUD_HEALTH
         assert cloud.speed == RAIN_CLOUD_SPEED
 
-        # Starts at (-100, 100)
-        assert cloud.pos == pygame.Vector2(-100.0, 100.0)
+        # Starts at route entry path[0]
+        assert cloud.pos == pygame.Vector2(*cloud.path[0])
 
         # Predict pos moves straight toward exit
         target = pygame.Vector2(*WAYPOINT_PIXELS[-1])
@@ -313,6 +329,86 @@ class TestPhase4Archetypes:
         # For 0.5s: 0.5s at 50 px/s = 25px
         budget_short = enemy._travel_budget(0.5)
         assert abs(budget_short - 25.0) < 0.001
+
+    def test_apply_stun_and_tick_modifiers(self) -> None:
+        """apply_stun sets StunModifier; _tick_modifiers decrements and clears it."""
+        enemy = Rotted2x4(pos=pygame.Vector2(100, 100), speed=100.0)
+        enemy.apply_stun(1.5)
+        assert "stun" in enemy.modifiers
+        assert isinstance(enemy.modifiers["stun"], StunModifier)
+        assert enemy.modifiers["stun"].duration == 1.5
+
+        # Ticking 0.5s reduces duration
+        enemy._tick_modifiers(0.5)
+        assert "stun" in enemy.modifiers
+        assert abs(enemy.modifiers["stun"].duration - 1.0) < 0.001
+
+        # Ticking another 1.0s clears the stun
+        enemy._tick_modifiers(1.0)
+        assert "stun" not in enemy.modifiers
+
+    def test_boss_stun_lockout_prevents_stunlock(self) -> None:
+        """Boss (is_boss=True) receives lockout = dur + 3.0s and ignores stuns during lockout."""
+        boss = OshaInspector(pos=pygame.Vector2(100, 100))
+        assert boss.is_boss is True
+
+        boss.apply_stun(1.5)
+        assert "stun" in boss.modifiers
+        # Lockout is duration (1.5) + 3.0 = 4.5s
+        assert abs(boss._stun_lockout - 4.5) < 0.001
+
+        # Attempting another stun immediately is ignored
+        boss.apply_stun(2.0)
+        assert boss.modifiers["stun"].duration == 1.5  # not overwritten
+
+        # Tick 2.0s: stun expires (1.5s), but lockout has 2.5s remaining
+        boss._tick_modifiers(2.0)
+        assert "stun" not in boss.modifiers
+        assert abs(boss._stun_lockout - 2.5) < 0.001
+
+        # Attempting stun while lockout is active is ignored
+        boss.apply_stun(1.0)
+        assert "stun" not in boss.modifiers
+
+        # Tick remaining 2.5s of lockout
+        boss._tick_modifiers(2.5)
+        assert boss._stun_lockout == 0.0
+
+        # Now can be stunned again
+        boss.apply_stun(1.0)
+        assert "stun" in boss.modifiers
+
+    def test_stunned_osha_does_not_radiate_aura(self) -> None:
+        """When OSHA inspector is stunned, Stop-Work aura is suppressed."""
+        boss = OshaInspector(pos=pygame.Vector2(200, 200))
+        tower = NailGunner(col=3, row=3)
+        tower.center = pygame.Vector2(220, 200)
+        world = World(enemies=[boss], towers={(3, 3): tower})
+
+        # Not stunned -> tower disabled
+        world.refresh_auras()
+        assert tower.is_disabled is True
+
+        # Stunned -> aura suppressed, tower stays enabled
+        boss.apply_stun(1.5)
+        world.refresh_auras()
+        assert tower.is_disabled is False
+
+    def test_travel_budget_with_concurrent_stun_and_slow(self) -> None:
+        """_travel_budget correctly handles overlapping stun (0 speed) and speed modifier."""
+        enemy = Rotted2x4(pos=pygame.Vector2(100, 100), speed=100.0)
+        enemy.apply_stun(1.0)
+        enemy.apply_speed_modifier(0.5, 2.0)
+
+        # In a 2.0s window:
+        # First 1.0s: stunned -> 0 travel.
+        # Speed modifier decays by 1.0s during stun -> 1.0s of 0.5x remaining.
+        # Next 1.0s: 1.0s at 0.5x speed (50 px/s) -> 50 px travel.
+        budget = enemy._travel_budget(2.0)
+        assert abs(budget - 50.0) < 0.001
+
+        # In a 0.5s window: completely stunned -> 0 travel.
+        assert enemy._travel_budget(0.5) == 0.0
 
 
 # ---------------------------------------------------------------------------

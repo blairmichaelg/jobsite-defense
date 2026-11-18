@@ -6,10 +6,14 @@ SDL dummy drivers are configured in conftest.py.
 from __future__ import annotations
 
 from src.economy import Economy
-from src.level import ROAD_CELLS
+from src.level import load_level
+from src.save import SaveData
 from src.settings import NAIL_GUNNER_COST, NAIL_GUNNER_TIER2_COST
 from src.tower import ConcretePump, NailGunner
 from src.world import World
+
+_DEFAULT_LEVEL = load_level("level_1.json")
+ROAD_CELLS = _DEFAULT_LEVEL.road_cells
 
 
 class TestWorldTryBuild:
@@ -116,3 +120,27 @@ class TestWorldUpgradesAndLiquidation:
         world = World(economy=Economy(project_budget=1000))
         world.sell_tower(5, 5)
         assert world.economy.project_budget == 1000
+
+
+class TestWorldPerks:
+    """Validate meta-progression perk integration in World."""
+
+    def test_union_dues_grants_extra_starting_budget(self) -> None:
+        """Union Dues perk adds $250 to starting project budget."""
+        save = SaveData(equity=0, perks={"union_dues"})
+        world = World(economy=Economy(project_budget=1500), save_data=save)
+        # 1500 base + 250 bonus = 1750
+        assert world.economy.project_budget == 1750
+
+    def test_better_ammo_buffs_nail_gunner_damage(self) -> None:
+        """Heavy Duty Nails perk adds +5 base damage to NailGunner upon creation."""
+        save = SaveData(equity=0, perks={"better_ammo"})
+        world = World(economy=Economy(project_budget=1500), save_data=save)
+        assert (0, 3) not in ROAD_CELLS
+        world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")
+
+        tower = world.towers[(0, 3)]
+        assert isinstance(tower, NailGunner)
+        # Base was 25.0 + 5.0 bonus = 30.0
+        assert tower.base_damage == 30.0
+        assert tower.effective_damage == 30.0

@@ -9,8 +9,8 @@ import pygame
 import pytest
 
 from src.economy import Economy
-from src.enemy import Enemy, RainCloud, Rotted2x4
-from src.level import POWERUP_TILES, ROAD_CELLS
+from src.enemy import Enemy, RainCloud, Rotted2x4, SpeedModifier
+from src.level import load_level
 from src.projectile import ConcreteGlob, TarpProjectile
 from src.settings import (
     CONCRETE_GLOB_SPEED,
@@ -30,6 +30,10 @@ from src.settings import (
 )
 from src.tower import ConcretePump, NailGunner, TarpCannon, Tower
 from src.world import World
+
+_DEFAULT_LEVEL = load_level("level_1.json")
+POWERUP_TILES = _DEFAULT_LEVEL.powerup_tiles
+ROAD_CELLS = _DEFAULT_LEVEL.road_cells
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -325,8 +329,10 @@ class TestConcretePumpAndGlob:
         assert glob.alive is False
         assert e1.health == 45.0
         assert "speed" in e1.modifiers
-        assert e1.modifiers["speed"].multiplier == 0.5
-        assert e1.modifiers["speed"].duration == 3.0
+        speed_mod = e1.modifiers["speed"]
+        assert isinstance(speed_mod, SpeedModifier)
+        assert speed_mod.multiplier == 0.5
+        assert speed_mod.duration == 3.0
         assert e2.health == 50.0
 
 
@@ -423,3 +429,102 @@ class TestTarpCannonAndProjectile:
         assert proj.alive is False
         assert cloud.alive is False
         assert world.economy.project_budget == 100 + cloud.bounty
+
+    def test_tarp_cannon_upgrades(self) -> None:
+        """TarpCannon upgrades through Tier 2 (Sticky Resin) and Tier 3 (EMP Net)."""
+        cannon = TarpCannon(col=2, row=2)
+        assert cannon.upgrade_level == 1
+        assert cannon.next_upgrade_name == "Sticky Resin"
+        assert cannon.next_upgrade_cost == 500
+
+        cannon.upgrade()
+        assert cannon.upgrade_level == 2
+        assert cannon.invested == 900  # 400 + 500
+        assert cannon.next_upgrade_name == "EMP Net"
+        assert cannon.next_upgrade_cost == 1200
+
+        cannon.upgrade()
+        assert cannon.upgrade_level == 3
+        assert cannon.invested == 2100  # 900 + 1200
+        assert cannon.next_upgrade_name is None
+        assert cannon.next_upgrade_cost is None
+
+    def test_tarp_cannon_tier2_applies_slow_to_flyers(self) -> None:
+        """Tier 2 TarpCannon projectile applies 0.3x speed modifier to flying targets."""
+        cannon = TarpCannon(col=4, row=4)
+        cannon.center = pygame.Vector2(200, 200)
+        cannon.upgrade_level = 2
+
+        cloud = RainCloud(pos=pygame.Vector2(220, 200), health=60.0)
+        world = World(enemies=[cloud])
+
+        cannon.update(0.1, world)
+        assert len(world.projectiles) == 1
+        proj = world.projectiles[0]
+        assert isinstance(proj, TarpProjectile)
+        assert proj.slow_multiplier == 0.3
+
+        # Projectile hits cloud
+        proj.update(0.1, world)
+        assert proj.alive is False
+        assert "speed" in cloud.modifiers
+        cloud_mod = cloud.modifiers["speed"]
+        assert isinstance(cloud_mod, SpeedModifier)
+        assert cloud_mod.multiplier == 0.3
+
+    def test_tarp_cannon_tier3_applies_stun_to_targets(self) -> None:
+        """Tier 3 TarpCannon projectile applies 1.5s stun to targets."""
+        cannon = TarpCannon(col=4, row=4)
+        cannon.center = pygame.Vector2(200, 200)
+        cannon.upgrade_level = 3
+
+        creep = Rotted2x4(pos=pygame.Vector2(220, 200), health=60.0)
+        world = World(enemies=[creep])
+
+        cannon.update(0.1, world)
+        assert len(world.projectiles) == 1
+        proj = world.projectiles[0]
+        assert isinstance(proj, TarpProjectile)
+        assert proj.stun_duration == 1.5
+
+        proj.update(0.1, world)
+        assert proj.alive is False
+        assert "stun" in creep.modifiers
+        assert creep.modifiers["stun"].duration == 1.5
+
+    def test_tarp_projectile_retargets_when_original_target_dies(self) -> None:
+        """If original target dies mid-flight, TarpProjectile retargets closest living enemy."""
+        original = Rotted2x4(pos=pygame.Vector2(250, 200), health=10.0)
+        second = Rotted2x4(pos=pygame.Vector2(260, 200), health=50.0)
+
+        proj = TarpProjectile(
+            pos=pygame.Vector2(200, 200),
+            target=original,
+            speed=200.0,
+            damage=10.0,
+        )
+        world = World(enemies=[original, second], projectiles=[proj])
+
+        # Kill original target before projectile arrives
+        original.alive = False
+
+        # Next update triggers retargeting to 'second'
+        proj.update(0.1, world)
+        assert proj.alive is True
+        assert proj.target is second
+
+    def test_tarp_projectile_dies_if_no_enemies_left_to_retarget(self) -> None:
+        """If all enemies are dead, TarpProjectile marks alive=False."""
+        original = Rotted2x4(pos=pygame.Vector2(250, 200), health=10.0)
+        proj = TarpProjectile(
+            pos=pygame.Vector2(200, 200),
+            target=original,
+            speed=200.0,
+            damage=10.0,
+        )
+        world = World(enemies=[original], projectiles=[proj])
+
+        original.alive = False
+        proj.update(0.1, world)
+        assert proj.alive is False
+        assert proj.target is None

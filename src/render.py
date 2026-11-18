@@ -20,7 +20,7 @@ from __future__ import annotations
 import pygame
 
 from src.grid import cell_rect
-from src.level import POWERUP_LABELS, POWERUP_TILES, ROAD_CELLS
+from src.level import POWERUP_LABELS, LevelData, load_level
 from src.settings import (
     CELL_SIZE,
     COLOR_GRASS,
@@ -34,29 +34,12 @@ from src.settings import (
 )
 
 
-def build_static_layer(label_font: pygame.font.Font) -> pygame.Surface:
-    """Compose the immutable background into one pre-converted surface.
+def build_static_layer(
+    label_font: pygame.font.Font, level: LevelData | None = None
+) -> pygame.Surface:
+    """Compose the immutable background into one pre-converted surface."""
+    active_level = level if level is not None else load_level("level_1.json")
 
-    Rendering order (painter's algorithm, back → front):
-
-    1. Grass fill
-    2. Road cell rectangles
-    3. Power-up tile overlays + border highlights + labels
-    4. Grid lines
-
-    The returned surface is ``convert()``-ed to the display pixel format
-    for the fastest possible per-frame blit.
-
-    Args:
-        label_font: Font used to render the three-letter power-up labels
-                    (``"SPD"``, ``"DMG"``, ``"RNG"``).  Pass the same
-                    font instance used for other small UI text.
-
-    Returns:
-        A display-format ``pygame.Surface`` ready to blit each frame.
-    """
-    # Work on an SRCALPHA surface so power-up overlays composite cleanly,
-    # then convert to display format at the end.
     layer = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
 
     # ------------------------------------------------------------------
@@ -67,14 +50,14 @@ def build_static_layer(label_font: pygame.font.Font) -> pygame.Surface:
     # ------------------------------------------------------------------
     # 2. Road cells
     # ------------------------------------------------------------------
-    for col, row in ROAD_CELLS:
+    for col, row in active_level.road_cells:
         pygame.draw.rect(layer, COLOR_ROAD, cell_rect(col, row))
 
     # ------------------------------------------------------------------
     # 3. Power-up tiles — semi-transparent fill + border + label
     # ------------------------------------------------------------------
     overlay = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
-    for (col, row), (effect, _mult) in POWERUP_TILES.items():
+    for (col, row), (effect, _mult) in active_level.powerup_tiles.items():
         color = POWERUP_COLORS.get(effect, (255, 255, 255))
         rect = cell_rect(col, row)
 
@@ -97,4 +80,6 @@ def build_static_layer(label_font: pygame.font.Font) -> pygame.Surface:
         y = row * CELL_SIZE
         pygame.draw.line(layer, COLOR_GRID_LINE, (0, y), (WINDOW_WIDTH, y))
 
-    return layer.convert()
+    if pygame.display.get_surface() is not None:
+        return layer.convert()
+    return layer

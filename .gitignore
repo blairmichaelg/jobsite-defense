@@ -76,3 +76,5 @@ Desktop.ini
 # ---------- Pygame / Game specific ----------
 *.save
 *.log
+save_data.json
+*.tmp

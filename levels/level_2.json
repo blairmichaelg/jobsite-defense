@@ -1,0 +1,29 @@
+{
+  "name": "The Subcontract",
+  "paths": {
+    "main": [
+      [-1, 2],
+      [6, 2],
+      [6, 6],
+      [16, 6]
+    ],
+    "flank": [
+      [-1, 9],
+      [10, 9],
+      [10, 10],
+      [16, 10]
+    ]
+  },
+  "powerups": {
+    "3,4": ["damage", 1.5],
+    "8,3": ["attack_speed", 1.25],
+    "12,8": ["range", 1.25]
+  },
+  "waves": [
+    {"enemy": "Rotted2x4", "count": 6, "interval": 1.0, "path": "main"},
+    {"enemy": "HOABoardMember", "count": 12, "interval": 0.3, "path": "flank"},
+    {"enemy": "RainCloud", "count": 3, "interval": 1.5, "path": "flank"},
+    {"enemy": "Rotted2x4", "count": 8, "interval": 0.8, "path": "main"},
+    {"enemy": "OshaInspector", "count": 1, "interval": 1.0, "path": "main"}
+  ]
+}

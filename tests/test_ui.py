@@ -8,10 +8,13 @@ from __future__ import annotations
 import pygame
 
 from src.economy import Economy
-from src.level import ROAD_CELLS
+from src.level import load_level
 from src.settings import CELL_SIZE, WINDOW_HEIGHT
 from src.ui import _BUTTON_RADIUS, RadialMenu
 from src.world import World
+
+_DEFAULT_LEVEL = load_level("level_1.json")
+ROAD_CELLS = _DEFAULT_LEVEL.road_cells
 
 
 def _find_grass_col(row: int) -> int:

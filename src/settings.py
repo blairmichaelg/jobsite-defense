@@ -173,6 +173,28 @@ CONCRETE_PUMP_TIER3_COST: int = 1000
 """Upgrade cost for Tier 3: Cement Truck."""
 
 # ---------------------------------------------------------------------------
+# Tower — Tarp Cannon base stats
+# ---------------------------------------------------------------------------
+
+TARP_CANNON_COST: int = 400
+"""Purchase cost in project budget dollars."""
+
+TARP_CANNON_RANGE: float = 160.0
+"""Base attack range in pixels."""
+
+TARP_CANNON_COOLDOWN: float = 0.3
+"""Seconds between successive shots."""
+
+TARP_CANNON_DAMAGE: float = 10.0
+"""Impact damage per homing tarp net."""
+
+TARP_CANNON_TIER2_COST: int = 500
+"""Upgrade cost for Tier 2: Sticky Resin."""
+
+TARP_CANNON_TIER3_COST: int = 1200
+"""Upgrade cost for Tier 3: EMP Net."""
+
+# ---------------------------------------------------------------------------
 # Power-up colour map
 # ---------------------------------------------------------------------------
 

@@ -1,15 +1,12 @@
 """Jobsite Defense — enemy entity, archetypes, and movement.
 
-Phase 4 changes
----------------
-* Added ``predict_pos(seconds)``: advances along waypoints (or straight-line
-  for flyers) to return the predicted future coordinate.
-* Enhanced ``apply_speed_modifier(mult, dur)``: overwrites if slower; takes max duration if equal.
-* Added ``RainCloud``: flying hazard (is_flying=True), moves in a straight line from
-  (-100, 100) toward the exit waypoint. Ground towers without air capability cannot target it.
-* Added ``OshaInspector``: boss enemy (2500 HP, 40 px/s, $100 bounty, costs 20 Patience).
-  Emits Stop-Work Order Aura (150px) that disables nearby towers.
-* Added ``patience_cost`` attribute to ``Enemy`` (defaults to 1; 20 for OSHA boss).
+Phase 6 updates:
+- Stun status framework with boss stun-lockout immunity (_stun_lockout).
+- Centralized modifier ticking (_tick_modifiers).
+- Multi-modifier travel budget accounting for overlapping stun and speed debuffs.
+- Route decoupling: Enemy.path holds route pixels from world.level.paths.
+- RainCloud flies from path[0] to path[-1].
+- OSHA Inspector stops radiating aura when stunned.
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from src.level import WAYPOINT_PIXELS
 from src.settings import (
     COLOR_ENEMY,
     COLOR_ENEMY_OUTLINE,
@@ -47,6 +43,16 @@ if TYPE_CHECKING:
     from src.world import World
 
 
+def _get_default_pixels() -> tuple[tuple[float, float], ...]:
+    """Lazy loader for default route pixels to avoid circular imports."""
+    try:
+        from src.level import load_level
+
+        return load_level("level_1.json").primary_path.pixels
+    except Exception:
+        return ((0.0, 0.0), (100.0, 100.0))
+
+
 @dataclass
 class SpeedModifier:
     """Temporary movement speed adjustment.
@@ -61,36 +67,59 @@ class SpeedModifier:
 
 
 @dataclass
+class StunModifier:
+    """Temporary total movement and action incapacitation.
+
+    Attributes:
+        duration: Remaining stun duration in seconds.
+    """
+
+    duration: float = 1.5
+
+
+@dataclass
 class Enemy:
-    """Base class for all creep entities traversing the waypoint path.
+    """Base class for all creep entities traversing a navigational path.
 
     Attributes:
         pos: Current world position with sub-pixel precision.
+        path: Ordered pixel coordinate tuples for the entity's path.
         waypoint_index: Index of the *next* pixel waypoint to reach.
         speed: Base movement speed in pixels per second.
         health: Remaining hit-points.
         bounty: Dollars awarded to the player when killed by towers/projectiles.
         patience_cost: Patience lost if this enemy escapes off-screen.
         is_flying: Whether the entity bypasses ground pathing.
+        is_boss: Whether this entity has boss status immunities (e.g. stun lockout).
         alive: ``False`` once the enemy has left the field or died.
         reached_end: ``True`` when the enemy exited via the final waypoint.
         layer: Render/update layer — enemies sit at layer 10.
-        modifiers: Status effects keyed by name (e.g. ``"speed"``).
+        modifiers: Status effects keyed by name (e.g. ``"speed"``, ``"stun"``).
+        _stun_lockout: Seconds remaining before another stun can affect this unit.
     """
 
-    pos: pygame.Vector2 = field(
-        default_factory=lambda: pygame.Vector2(*WAYPOINT_PIXELS[0])
-    )
+    pos: pygame.Vector2 = field(default_factory=lambda: pygame.Vector2(0.0, 0.0))
+    path: tuple[tuple[float, float], ...] = ()
     waypoint_index: int = 1
     speed: float = ENEMY_SPEED
     health: float = ENEMY_MAX_HEALTH
     bounty: int = 15
     patience_cost: int = 1
     is_flying: bool = False
+    is_boss: bool = False
     alive: bool = True
     reached_end: bool = False
     layer: int = 10
-    modifiers: dict[str, SpeedModifier] = field(default_factory=dict)
+    modifiers: dict[str, SpeedModifier | StunModifier] = field(default_factory=dict)
+    _stun_lockout: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Initialize position from path if not explicitly provided."""
+        if not self.path:
+            self.path = _get_default_pixels()
+
+        if self.pos.x == 0.0 and self.pos.y == 0.0 and self.path:
+            self.pos = pygame.Vector2(*self.path[0])
 
     # ------------------------------------------------------------------
     # Damage & Status Effects
@@ -105,46 +134,67 @@ class Enemy:
             self.alive = False
 
     def apply_speed_modifier(self, mult: float, dur: float) -> None:
-        """Apply or refresh a speed debuff according to stacking rules.
-
-        Rules:
-        - If new mult is strictly stronger (lower value), overwrite both mult and duration.
-        - If new mult is equal to existing, extend duration to max(current, dur).
-        - If new mult is weaker, do not downgrade the active debuff.
-        """
+        """Apply or refresh a speed debuff according to stacking rules."""
         current = self.modifiers.get("speed")
-        if current is None or mult < current.multiplier:
+        if current is None or not isinstance(current, SpeedModifier) or mult < current.multiplier:
             self.modifiers["speed"] = SpeedModifier(multiplier=mult, duration=dur)
         elif math.isclose(mult, current.multiplier, rel_tol=1e-5):
             current.duration = max(current.duration, dur)
+
+    def apply_stun(self, dur: float) -> None:
+        """Apply a stun debuff, respecting boss stun-lockout immunity."""
+        if self._stun_lockout > 0.0:
+            return
+        self.modifiers["stun"] = StunModifier(duration=dur)
+        if self.is_boss:
+            self._stun_lockout = dur + 3.0
+
+    def _tick_modifiers(self, dt: float) -> None:
+        """Tick all active status effects and update boss stun lockout."""
+        if self._stun_lockout > 0.0:
+            self._stun_lockout = max(0.0, self._stun_lockout - dt)
+
+        expired: list[str] = []
+        for key, mod in self.modifiers.items():
+            mod.duration -= dt
+            if mod.duration <= 0.0:
+                expired.append(key)
+        for key in expired:
+            del self.modifiers[key]
 
     # ------------------------------------------------------------------
     # Position Prediction (Target Leading) & Aura
     # ------------------------------------------------------------------
 
     def _travel_budget(self, seconds: float) -> float:
-        """Calculate exact pixel travel, accounting for if speed modifier expires mid-flight."""
-        mod = self.modifiers.get("speed")
-        if mod is None:
-            return self.speed * seconds
-        slowed = min(seconds, mod.duration)
-        return self.speed * (mod.multiplier * slowed + (seconds - slowed))
+        """Calculate exact pixel travel, accounting for concurrent stun and speed modifiers."""
+        stun_mod = self.modifiers.get("stun")
+        stun_dur = stun_mod.duration if stun_mod else 0.0
+
+        stun_time = min(seconds, stun_dur)
+        moving_time = seconds - stun_time
+
+        if moving_time <= 0.0:
+            return 0.0
+
+        speed_mod = self.modifiers.get("speed")
+        if speed_mod is None or not isinstance(speed_mod, SpeedModifier):
+            return self.speed * moving_time
+
+        remaining_speed_dur = max(0.0, speed_mod.duration - stun_time)
+        slowed_time = min(moving_time, remaining_speed_dur)
+        normal_time = moving_time - slowed_time
+
+        return self.speed * (speed_mod.multiplier * slowed_time + normal_time)
 
     def predict_pos(self, seconds: float) -> pygame.Vector2:
-        """Simulate future position after *seconds* along the waypoint path.
-
-        Args:
-            seconds: Lead time in seconds (e.g. projectile flight time).
-
-        Returns:
-            Projected coordinate along the waypoint path.
-        """
+        """Simulate future position after *seconds* along the waypoint path."""
         budget = self._travel_budget(seconds)
         pos = pygame.Vector2(self.pos)
         wp_idx = self.waypoint_index
 
-        while budget > 0.0 and wp_idx < len(WAYPOINT_PIXELS):
-            wx, wy = WAYPOINT_PIXELS[wp_idx]
+        while budget > 0.0 and wp_idx < len(self.path):
+            wx, wy = self.path[wp_idx]
             target = pygame.Vector2(wx, wy)
             dist = pos.distance_to(target)
 
@@ -162,33 +212,35 @@ class Enemy:
         """Apply any persistent area-of-effect aura to the world."""
 
     # ------------------------------------------------------------------
-    # Update
+    # Update & Render
     # ------------------------------------------------------------------
 
     def update(self, dt: float, world: World) -> None:
-        """Advance the enemy along the waypoint path, ticking status effects."""
+        """Advance the enemy along its path, ticking status effects."""
         if not self.alive:
             return
 
-        # 1. Tick and expire modifiers
-        expired: list[str] = []
-        for key, mod in self.modifiers.items():
-            mod.duration -= dt
-            if mod.duration <= 0.0:
-                expired.append(key)
-        for key in expired:
-            del self.modifiers[key]
+        self._tick_modifiers(dt)
 
-        # 2. Compute effective speed
-        current_speed = self.speed
-        if "speed" in self.modifiers:
-            current_speed *= self.modifiers["speed"].multiplier
+        # Stun incapacitates all movement
+        if "stun" in self.modifiers:
+            return
 
-        # 3. Path travel
-        budget = current_speed * dt
+        if not self.path and world.level and world.level.paths:
+            self.path = world.level.primary_path.pixels
 
-        while budget > 0.0 and self.waypoint_index < len(WAYPOINT_PIXELS):
-            wx, wy = WAYPOINT_PIXELS[self.waypoint_index]
+        if not self.path:
+            return
+
+        effective_speed = self.speed
+        speed_mod = self.modifiers.get("speed")
+        if isinstance(speed_mod, SpeedModifier):
+            effective_speed *= speed_mod.multiplier
+
+        budget = effective_speed * dt
+
+        while budget > 0.0 and self.waypoint_index < len(self.path):
+            wx, wy = self.path[self.waypoint_index]
             target = pygame.Vector2(wx, wy)
             dist_to_target = self.pos.distance_to(target)
 
@@ -200,22 +252,20 @@ class Enemy:
                 self.pos = self.pos.move_towards(target, budget)
                 budget = 0.0
 
-        if self.waypoint_index >= len(WAYPOINT_PIXELS):
+        if self.waypoint_index >= len(self.path):
             self.alive = False
             self.reached_end = True
 
-    # ------------------------------------------------------------------
-    # Render
-    # ------------------------------------------------------------------
-
     def draw(self, surface: pygame.Surface) -> None:
-        """Render the enemy circle with outline and optional slow effect ring."""
+        """Render the enemy circle with outline and optional status rings."""
         center = (int(self.pos.x), int(self.pos.y))
         pygame.draw.circle(surface, COLOR_ENEMY, center, ENEMY_RADIUS)
         pygame.draw.circle(surface, COLOR_ENEMY_OUTLINE, center, ENEMY_RADIUS, width=2)
 
         if "speed" in self.modifiers:
             pygame.draw.circle(surface, (150, 155, 150), center, ENEMY_RADIUS + 3, width=2)
+        if "stun" in self.modifiers:
+            pygame.draw.circle(surface, (255, 255, 100), center, ENEMY_RADIUS + 5, width=2)
 
 
 @dataclass
@@ -246,18 +296,17 @@ class HOABoardMember(Enemy):
 
         if "speed" in self.modifiers:
             pygame.draw.circle(surface, (150, 155, 150), center, radius + 3, width=2)
+        if "stun" in self.modifiers:
+            pygame.draw.circle(surface, (255, 255, 100), center, radius + 5, width=2)
 
 
 @dataclass
 class RainCloud(Enemy):
-    """Flying hazard creep — ignores the road, flies straight to the exit.
+    """Flying hazard creep — ignores the road, flies straight from path[0] to path[-1].
 
     Ground towers cannot target it unless equipped with air capability.
     """
 
-    pos: pygame.Vector2 = field(
-        default_factory=lambda: pygame.Vector2(-100.0, 100.0)
-    )
     speed: float = RAIN_CLOUD_SPEED
     health: float = RAIN_CLOUD_HEALTH
     bounty: int = RAIN_CLOUD_BOUNTY
@@ -266,29 +315,37 @@ class RainCloud(Enemy):
 
     def predict_pos(self, seconds: float) -> pygame.Vector2:
         """Simulate future position flying directly toward final exit waypoint."""
-        target = pygame.Vector2(*WAYPOINT_PIXELS[-1])
+        if not self.path:
+            return pygame.Vector2(self.pos)
+        target = pygame.Vector2(*self.path[-1])
         budget = self._travel_budget(seconds)
+        dist = self.pos.distance_to(target)
+        if budget >= dist:
+            return target
         return self.pos.move_towards(target, budget)
 
     def update(self, dt: float, world: World) -> None:
-        """Fly in a straight line from current pos toward final exit."""
+        """Fly in a straight line from path[0] toward path[-1]."""
         if not self.alive:
             return
 
-        # Tick modifiers
-        expired: list[str] = []
-        for key, mod in self.modifiers.items():
-            mod.duration -= dt
-            if mod.duration <= 0.0:
-                expired.append(key)
-        for key in expired:
-            del self.modifiers[key]
+        self._tick_modifiers(dt)
+
+        if "stun" in self.modifiers:
+            return
+
+        if not self.path and world.level and world.level.paths:
+            self.path = world.level.primary_path.pixels
+
+        if not self.path:
+            return
 
         effective_speed = self.speed
-        if "speed" in self.modifiers:
-            effective_speed *= self.modifiers["speed"].multiplier
+        speed_mod = self.modifiers.get("speed")
+        if isinstance(speed_mod, SpeedModifier):
+            effective_speed *= speed_mod.multiplier
 
-        target = pygame.Vector2(*WAYPOINT_PIXELS[-1])
+        target = pygame.Vector2(*self.path[-1])
         dist = self.pos.distance_to(target)
         step = effective_speed * dt
 
@@ -302,14 +359,15 @@ class RainCloud(Enemy):
     def draw(self, surface: pygame.Surface) -> None:
         """Draw an overcast raincloud entity with falling rain streak."""
         cx, cy = int(self.pos.x), int(self.pos.y)
-        # Cloud puffs
         pygame.draw.circle(surface, COLOR_RAIN_CLOUD, (cx - 8, cy), 12)
         pygame.draw.circle(surface, COLOR_RAIN_CLOUD, (cx + 8, cy), 12)
         pygame.draw.circle(surface, COLOR_RAIN_CLOUD, (cx, cy - 6), 14)
         pygame.draw.circle(surface, COLOR_RAIN_CLOUD_OUTLINE, (cx, cy), 16, width=1)
-        # Rain streaks
         pygame.draw.line(surface, (100, 160, 240), (cx - 6, cy + 14), (cx - 9, cy + 22), 2)
         pygame.draw.line(surface, (100, 160, 240), (cx + 6, cy + 14), (cx + 3, cy + 22), 2)
+
+        if "stun" in self.modifiers:
+            pygame.draw.circle(surface, (255, 255, 100), (cx, cy), 20, width=2)
 
 
 @dataclass
@@ -324,10 +382,11 @@ class OshaInspector(Enemy):
     bounty: int = OSHA_INSPECTOR_BOUNTY
     patience_cost: int = OSHA_INSPECTOR_PATIENCE
     aura_radius: float = OSHA_AURA_RADIUS
+    is_boss: bool = True
 
     def apply_aura(self, world: World) -> None:
-        """Radiate Stop-Work Order disabling aura to towers within 150px."""
-        if not self.alive:
+        """Radiate Stop-Work Order disabling aura to towers within 150px unless stunned."""
+        if not self.alive or "stun" in self.modifiers:
             return
         aura_sq = self.aura_radius ** 2
         for tower in world.towers.values():
@@ -338,19 +397,17 @@ class OshaInspector(Enemy):
         """Render the OSHA inspector with safety helmet and Stop-Work aura ring."""
         cx, cy = int(self.pos.x), int(self.pos.y)
 
-        # Draw subtle aura ring
-        if self.alive:
+        if self.alive and "stun" not in self.modifiers:
             pygame.draw.circle(surface, (230, 40, 40), (cx, cy), int(self.aura_radius), width=1)
 
-        # Draw imposing boss circle
         boss_radius = 18
         pygame.draw.circle(surface, COLOR_OSHA, (cx, cy), boss_radius)
         pygame.draw.circle(surface, COLOR_OSHA_OUTLINE, (cx, cy), boss_radius, width=3)
-
-        # Hard-hat visor stripe
         pygame.draw.line(surface, (255, 255, 255), (cx - 10, cy - 6), (cx + 10, cy - 6), 3)
 
-        # Health bar above inspector
+        if "stun" in self.modifiers:
+            pygame.draw.circle(surface, (255, 255, 100), (cx, cy), boss_radius + 6, width=2)
+
         bar_w = 40
         bar_h = 5
         pct = max(0.0, self.health / OSHA_INSPECTOR_HEALTH)
