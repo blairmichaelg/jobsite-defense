@@ -43,7 +43,7 @@ class TestRadialMenuSafeClamping:
         )
         assert opened is True
         assert menu.open is True
-        assert len(menu._buttons) == 2
+        assert len(menu._buttons) == 3
 
         for btn in menu._buttons:
             # Center must be at least _BUTTON_RADIUS from top, so top edge >= 0
@@ -158,3 +158,54 @@ class TestRadialMenuActions:
 
         assert world.towers[(col, 3)].upgrade_level == 2
         assert world.economy.project_budget == 200  # 500 - 300
+
+    def test_all_three_towers_in_radial_menu(self) -> None:
+        """Empty grass cell menu contains all 3 constructible towers from BUILDABLE."""
+        world = World(economy=Economy())
+        menu = RadialMenu()
+        menu.configure(world)
+
+        col = _find_grass_col(2)
+        px = col * CELL_SIZE + CELL_SIZE // 2
+        py = 2 * CELL_SIZE + CELL_SIZE // 2
+
+        menu.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(px, py))
+        )
+        assert menu.open is True
+        actions = {b.action for b in menu._buttons}
+        assert actions == {"nail_gunner", "concrete_pump", "tarp_cannon"}
+
+    def test_max_tier_button_disabled_and_consumes_clicks(self) -> None:
+        """When tower reaches Max Tier, upgrade button is disabled and clicks are consumed."""
+        world = World(economy=Economy(project_budget=3000))
+        col = _find_grass_col(2)
+        world.try_build(col, 2, 500, "nail_gunner")
+        world.towers[(col, 2)].upgrade_level = 3  # Force max tier
+
+        menu = RadialMenu()
+        menu.configure(world)
+
+        px = col * CELL_SIZE + CELL_SIZE // 2
+        py = 2 * CELL_SIZE + CELL_SIZE // 2
+
+        menu.handle_event(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(px, py))
+        )
+        assert menu.open is True
+
+        max_btn = next((b for b in menu._buttons if b.label == "Max Tier"), None)
+        assert max_btn is not None
+        assert max_btn.enabled is False
+        assert max_btn.subtext == "MAX"
+
+        # Click the disabled max tier button
+        consumed = menu.handle_event(
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                button=1,
+                pos=(int(max_btn.center.x), int(max_btn.center.y)),
+            )
+        )
+        assert consumed is True
+        assert world.towers[(col, 2)].upgrade_level == 3

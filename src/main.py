@@ -33,6 +33,7 @@ def main() -> None:
     running = True
     while running:
         dt = min(clock.tick(TARGET_FPS) / 1000.0, _DT_MAX)
+        scene_manager.fps = clock.get_fps()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:

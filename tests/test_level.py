@@ -45,6 +45,16 @@ class TestRoadGeometry:
         assert (4, 5) in road
         assert (-1, 2) not in road  # off-screen excluded
 
+    def test_road_raster_clamps_out_of_bounds_rows(self) -> None:
+        """_build_road excludes cells with row < 0 or row >= GRID_ROWS."""
+        from src.settings import GRID_ROWS
+
+        wps: tuple[tuple[int, int], ...] = ((2, -3), (2, GRID_ROWS + 3))
+        road = _build_road(wps)
+        for c, r in road:
+            assert c == 2
+            assert 0 <= r < GRID_ROWS
+
 
 class TestWaypointPixels:
     """Validate pre-computed pixel waypoints."""
@@ -138,6 +148,32 @@ class TestJsonLevelLoader:
         f.write_text("{ unquoted_bad_json: 123", encoding="utf-8")
 
         with pytest.raises(LevelError, match="Failed to read or parse"):
+            load_level(f)
+
+    def test_unknown_enemy_raises_level_error(self, tmp_path: Path) -> None:
+        """Wave with undefined enemy archetype string raises LevelError."""
+        bad_data = {
+            "name": "Unknown Enemy Level",
+            "paths": {"main": [[-1, 1], [5, 1]]},
+            "waves": [{"enemy": "SpaceInvader", "count": 5, "path": "main"}],
+        }
+        f = tmp_path / "unknown_enemy.json"
+        f.write_text(json.dumps(bad_data), encoding="utf-8")
+
+        with pytest.raises(LevelError, match="Unknown enemy 'SpaceInvader'"):
+            load_level(f)
+
+    def test_undefined_path_in_wave_raises_level_error(self, tmp_path: Path) -> None:
+        """Wave referencing undefined path name raises LevelError."""
+        bad_data = {
+            "name": "Missing Path Level",
+            "paths": {"main": [[-1, 1], [5, 1]]},
+            "waves": [{"enemy": "Rotted2x4", "count": 5, "path": "secret_tunnel"}],
+        }
+        f = tmp_path / "missing_path.json"
+        f.write_text(json.dumps(bad_data), encoding="utf-8")
+
+        with pytest.raises(LevelError, match="Wave references undefined path 'secret_tunnel'"):
             load_level(f)
 
     def test_nonexistent_file_raises_level_error(self) -> None:

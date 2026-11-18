@@ -15,12 +15,11 @@ from typing import Protocol, runtime_checkable
 
 import pygame
 
-from src.level import LevelData, load_level
+from src.level import LevelData, LevelError, load_level
 from src.protocols import Clickable, Entity
 from src.render import build_static_layer
 from src.save import SaveData
 from src.settings import (
-    TARGET_FPS,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
@@ -75,6 +74,7 @@ class SceneManager:
 
     def __init__(self, initial_scene: Scene | None = None) -> None:
         self._stack: list[Scene] = []
+        self.fps: float = 60.0
         if initial_scene is not None:
             self._stack.append(initial_scene)
 
@@ -166,19 +166,28 @@ class TitleScene:
         self._btn_levels = pygame.Rect(WINDOW_WIDTH // 2 - 140, 305, 280, 48)
         self._btn_tree = pygame.Rect(WINDOW_WIDTH // 2 - 140, 370, 280, 48)
         self._btn_quit = pygame.Rect(WINDOW_WIDTH // 2 - 140, 435, 280, 48)
+        self.last_error: str | None = None
 
     def _ensure_fonts(self) -> None:
         if self._font_title is None and pygame.font.get_init():
             self._font_title = pygame.font.Font(None, 56)
             self._font_body = pygame.font.Font(None, 24)
 
+    def _start_level(self, level_file: str) -> bool:
+        """Safely attempt to transition into GameplayScene."""
+        try:
+            self.scene_manager.change(
+                GameplayScene(level_file, self.save_data, self.scene_manager)
+            )
+            return True
+        except LevelError as err:
+            self.last_error = str(err)
+            return False
+
     def handle_event(self, event: pygame.event.Event) -> bool:
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_RETURN:
-                self.scene_manager.change(
-                    GameplayScene("level_1.json", self.save_data, self.scene_manager)
-                )
-                return True
+                return self._start_level("level_1.json")
             if event.key == pygame.K_l:
                 self.scene_manager.push(LevelSelectScene(self.scene_manager, self.save_data))
                 return True
@@ -192,10 +201,7 @@ class TitleScene:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
             if self._btn_play.collidepoint(mx, my):
-                self.scene_manager.change(
-                    GameplayScene("level_1.json", self.save_data, self.scene_manager)
-                )
-                return True
+                return self._start_level("level_1.json")
             if self._btn_levels.collidepoint(mx, my):
                 self.scene_manager.push(LevelSelectScene(self.scene_manager, self.save_data))
                 return True
@@ -275,11 +281,23 @@ class LevelSelectScene:
         self._btn_lvl1 = pygame.Rect(WINDOW_WIDTH // 2 - 180, 160, 360, 60)
         self._btn_lvl2 = pygame.Rect(WINDOW_WIDTH // 2 - 180, 240, 360, 60)
         self._btn_back = pygame.Rect(WINDOW_WIDTH // 2 - 100, 350, 200, 40)
+        self.last_error: str | None = None
 
     def _ensure_fonts(self) -> None:
         if self._font_title is None and pygame.font.get_init():
             self._font_title = pygame.font.Font(None, 40)
             self._font_body = pygame.font.Font(None, 22)
+
+    def _start_level(self, level_file: str) -> bool:
+        """Safely attempt to transition into GameplayScene."""
+        try:
+            self.scene_manager.change(
+                GameplayScene(level_file, self.save_data, self.scene_manager)
+            )
+            return True
+        except LevelError as err:
+            self.last_error = str(err)
+            return False
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         if event.type == pygame.KEYDOWN:
@@ -287,28 +305,16 @@ class LevelSelectScene:
                 self.scene_manager.pop()
                 return True
             if event.key == pygame.K_1:
-                self.scene_manager.change(
-                    GameplayScene("level_1.json", self.save_data, self.scene_manager)
-                )
-                return True
+                return self._start_level("level_1.json")
             if event.key == pygame.K_2:
-                self.scene_manager.change(
-                    GameplayScene("level_2.json", self.save_data, self.scene_manager)
-                )
-                return True
+                return self._start_level("level_2.json")
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             mx, my = event.pos
             if self._btn_lvl1.collidepoint(mx, my):
-                self.scene_manager.change(
-                    GameplayScene("level_1.json", self.save_data, self.scene_manager)
-                )
-                return True
+                return self._start_level("level_1.json")
             if self._btn_lvl2.collidepoint(mx, my):
-                self.scene_manager.change(
-                    GameplayScene("level_2.json", self.save_data, self.scene_manager)
-                )
-                return True
+                return self._start_level("level_2.json")
             if self._btn_back.collidepoint(mx, my):
                 self.scene_manager.pop()
                 return True
@@ -440,6 +446,9 @@ class GameplayScene:
         self._hud_surfaces: list[pygame.Surface] = []
         self._hud_timer: float = _HUD_REFRESH_INTERVAL
 
+        self._dirty: bool = True
+        self._cached_entities: list[Entity] = []
+
     def _ensure_assets(self) -> None:
         if self._static_layer is None and pygame.font.get_init():
             label_font = pygame.font.Font(None, 16)
@@ -480,6 +489,7 @@ class GameplayScene:
         self.game_state = GameState.PLAYING
         self.equity_awarded = False
         self._prev_budget = self.world.economy.project_budget
+        self._dirty = True
         self._rebuild_hud(0.0)
 
     def _rebuild_hud(self, fps: float) -> None:
@@ -501,13 +511,17 @@ class GameplayScene:
         ]
 
     def _build_entity_list(self) -> list[Entity]:
+        if not self._dirty:
+            return self._cached_entities
         alive_enemies: list[Entity] = [e for e in self.world.enemies if e.alive]
         alive_projectiles: list[Entity] = [p for p in self.world.projectiles if p.alive]
         towers: list[Entity] = list(self.world.towers.values())
-        return sorted(
+        self._cached_entities = sorted(
             alive_enemies + alive_projectiles + towers + [self.menu, self.wave_manager],
             key=lambda e: e.layer,
         )
+        self._dirty = False
+        return self._cached_entities
 
     # ------------------------------------------------------------------
     # Scene Protocol
@@ -524,6 +538,7 @@ class GameplayScene:
             ]
             for c in clickables:
                 if c.handle_event(event):
+                    self._dirty = True
                     return True
 
         if event.type == pygame.KEYDOWN:
@@ -548,22 +563,44 @@ class GameplayScene:
         if self.game_state != GameState.PLAYING:
             return
 
+        prev_enemies = len(self.world.enemies)
+        prev_proj = len(self.world.projectiles)
+        prev_towers = len(self.world.towers)
+
         entities = self._build_entity_list()
         for e in entities:
             e.update(dt, self.world)
 
         self.world.flush_earnings()
 
-        # Check enemies that escaped
+        # Check enemies that escaped or died
+        from src.world import GameEvent
+
         for enemy in self.world.enemies:
-            if not enemy.alive and enemy.reached_end:
-                self.world.economy.lose_patience(enemy.patience_cost)
+            if not enemy.alive:
+                if enemy.reached_end:
+                    self.world.emit(
+                        GameEvent.LEAK, enemy.pos, patience_cost=enemy.patience_cost
+                    )
+                    self.world.economy.lose_patience(enemy.patience_cost)
+                else:
+                    self.world.emit(GameEvent.KILL, enemy.pos, bounty=enemy.bounty)
 
         # In-place cull
         self.world.enemies[:] = [e for e in self.world.enemies if e.alive]
         self.world.projectiles[:] = [p for p in self.world.projectiles if p.alive]
 
+        if (
+            len(self.world.enemies) != prev_enemies
+            or len(self.world.projectiles) != prev_proj
+            or len(self.world.towers) != prev_towers
+        ):
+            self._dirty = True
+
         self.world.refresh_auras()
+
+        # Drain frame events from the world event bus
+        self.world.drain_events()
 
         # Check win/loss triggers
         if self.world.economy.game_over:
@@ -581,7 +618,7 @@ class GameplayScene:
         if self._hud_timer <= 0.0 or budget_changed:
             self._hud_timer = _HUD_REFRESH_INTERVAL
             self._prev_budget = self.world.economy.project_budget
-            self._rebuild_hud(TARGET_FPS)
+            self._rebuild_hud(self.scene_manager.fps)
 
     def draw(self, surface: pygame.Surface) -> None:
         self._ensure_assets()

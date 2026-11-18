@@ -32,7 +32,7 @@ WINDOW_HEIGHT: int = CELL_SIZE * GRID_ROWS  # 720
 TARGET_FPS: int = 60
 """Frame-rate cap for the game loop."""
 
-WINDOW_TITLE: str = "Jobsite Defense — Phase 4"
+WINDOW_TITLE: str = "Jobsite Defense"
 """Caption shown in the window title bar."""
 
 # ---------------------------------------------------------------------------
@@ -193,6 +193,21 @@ TARP_CANNON_TIER2_COST: int = 500
 
 TARP_CANNON_TIER3_COST: int = 1200
 """Upgrade cost for Tier 3: EMP Net."""
+
+TARP_SLOW_MULTIPLIER: float = 0.3
+"""Speed multiplier applied by Tier 2 Sticky Resin nets."""
+
+TARP_SLOW_DURATION: float = 3.0
+"""Duration in seconds of the Sticky Resin slow effect."""
+
+TARP_STUN_DURATION: float = 1.5
+"""Duration in seconds of the EMP Net stun debuff."""
+
+STUN_LOCKOUT_REGULAR: float = 1.5
+"""Post-stun immunity lockout window for regular creeps in seconds."""
+
+STUN_LOCKOUT_BOSS: float = 3.0
+"""Post-stun immunity lockout window for bosses in seconds."""
 
 # ---------------------------------------------------------------------------
 # Power-up colour map

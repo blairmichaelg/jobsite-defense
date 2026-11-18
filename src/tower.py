@@ -47,18 +47,9 @@ from src.settings import (
     NAIL_GUNNER_TIER3_COST,
     TARP_CANNON_TIER2_COST,
     TARP_CANNON_TIER3_COST,
+    TARP_SLOW_MULTIPLIER,
+    TARP_STUN_DURATION,
 )
-
-
-def _get_powerup_for_cell(col: int, row: int) -> tuple[str, float] | None:
-    """Lazy lookup of powerup tile from level_1 for backwards compatibility."""
-    try:
-        from src.level import load_level
-
-        return load_level("level_1.json").powerup_tiles.get((col, row))
-    except Exception:
-        return None
-
 
 if TYPE_CHECKING:
     from src.enemy import Enemy
@@ -114,6 +105,8 @@ class Tower:
     _barrel_angle: float = field(default=0.0, init=False)
 
     COST: ClassVar[int] = 500
+    NAME: ClassVar[str] = "Tower"
+    TYPE_KEY: ClassVar[str] = "tower"
 
     def __post_init__(self) -> None:
         """Derive cell center coordinate and power-up stats."""
@@ -131,7 +124,7 @@ class Tower:
         self.effective_damage = self.base_damage
         self.effective_cooldown = self.cooldown_max
 
-        tile = self.powerup_tile or _get_powerup_for_cell(self.col, self.row)
+        tile = self.powerup_tile
         if tile is not None:
             effect, multiplier = tile
             if effect == "range":
@@ -213,6 +206,8 @@ class NailGunner(Tower):
     """Single-target hit-scan tower with anti-air upgrade at Tier 3."""
 
     COST: ClassVar[int] = NAIL_GUNNER_COST
+    NAME: ClassVar[str] = "Nail Gunner"
+    TYPE_KEY: ClassVar[str] = "nail_gunner"
     cost: int = NAIL_GUNNER_COST
     base_range: float = NAIL_GUNNER_RANGE
     base_damage: float = NAIL_GUNNER_DAMAGE
@@ -283,6 +278,15 @@ class NailGunner(Tower):
         self._cooldown_remaining = self.effective_cooldown
         self._shot_target = pygame.Vector2(target.pos)
         self._shot_flash = _SHOT_FLASH_DURATION
+
+        from src.world import GameEvent
+
+        world.emit(
+            GameEvent.SHOT,
+            self.center,
+            target_pos=target.pos,
+            damage=self.effective_damage,
+        )
 
         if was_alive and not target.alive:
             world.request_earn(target.bounty)
@@ -363,6 +367,8 @@ class ConcretePump(Tower):
     """AoE artillery pump launching predictive wet concrete globs."""
 
     COST: ClassVar[int] = CONCRETE_PUMP_COST
+    NAME: ClassVar[str] = "Concrete Pump"
+    TYPE_KEY: ClassVar[str] = "concrete_pump"
     cost: int = CONCRETE_PUMP_COST
     base_range: float = CONCRETE_PUMP_RANGE
     base_damage: float = CONCRETE_PUMP_DAMAGE
@@ -440,6 +446,9 @@ class ConcretePump(Tower):
             slow_multiplier=self.slow_multiplier,
         )
         world.projectiles.append(glob)
+        from src.world import GameEvent
+
+        world.emit(GameEvent.SHOT, self.center, target_pos=aim_pos)
         self._cooldown_remaining = self.effective_cooldown
 
     def draw(self, surface: pygame.Surface) -> None:
@@ -503,6 +512,8 @@ class TarpCannon(Tower):
     """
 
     COST: ClassVar[int] = 400
+    NAME: ClassVar[str] = "Tarp Cannon"
+    TYPE_KEY: ClassVar[str] = "tarp_cannon"
     cost: int = 400
     base_range: float = 160.0
     base_damage: float = 10.0
@@ -568,9 +579,10 @@ class TarpCannon(Tower):
             self._barrel_angle = math.degrees(math.atan2(delta.y, delta.x))
 
         from src.projectile import TarpProjectile
+        from src.world import GameEvent
 
-        slow_mult = 0.3 if self.upgrade_level >= 2 else None
-        stun_dur = 1.5 if self.upgrade_level >= 3 else None
+        slow_mult = TARP_SLOW_MULTIPLIER if self.upgrade_level >= 2 else None
+        stun_dur = TARP_STUN_DURATION if self.upgrade_level >= 3 else None
 
         tarp = TarpProjectile(
             pos=pygame.Vector2(self.center),
@@ -580,6 +592,7 @@ class TarpCannon(Tower):
             stun_duration=stun_dur,
         )
         world.projectiles.append(tarp)
+        world.emit(GameEvent.SHOT, self.center, target_pos=target.pos)
         self._cooldown_remaining = self.effective_cooldown
 
     def draw(self, surface: pygame.Surface) -> None:
@@ -621,6 +634,13 @@ class TarpCannon(Tower):
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+
+BUILDABLE: tuple[type[Tower], ...] = (
+    NailGunner,
+    ConcretePump,
+    TarpCannon,
+)
+"""Canonical list of player-constructible towers shown in build menus."""
 
 TOWER_TYPES: dict[str, type[Tower]] = {
     "nail_gunner": NailGunner,

@@ -9,10 +9,18 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_SAVE_FILE = Path("save_data.json")
+
+def get_save_path() -> Path:
+    """Return platform-appropriate persistent save data path."""
+    if "APPDATA" in os.environ:
+        base = Path(os.environ["APPDATA"]) / "JobsiteDefense"
+    else:
+        base = Path.home() / ".local" / "share" / "JobsiteDefense"
+    return base / "save_data.json"
 
 
 @dataclass
@@ -31,9 +39,9 @@ class SaveData:
         """Atomically persist save state to disk using a temporary file.
 
         Args:
-            filepath: Destination file path (defaults to ``save_data.json``).
+            filepath: Destination file path (defaults to platform user data directory).
         """
-        target = Path(filepath) if filepath is not None else DEFAULT_SAVE_FILE
+        target = Path(filepath) if filepath is not None else get_save_path()
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp_target = target.with_suffix(f"{target.suffix}.tmp")
 
@@ -42,20 +50,31 @@ class SaveData:
             "perks": sorted(self.perks),
         }
 
-        tmp_target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp_target, target)
+        with open(tmp_target, "w", encoding="utf-8") as f:
+            f.write(json.dumps(payload, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+
+        for attempt in range(5):
+            try:
+                os.replace(tmp_target, target)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
 
     @classmethod
     def load(cls, filepath: str | Path | None = None) -> SaveData:
         """Load persistent save state from disk, returning defaults on any failure.
 
         Args:
-            filepath: Source file path (defaults to ``save_data.json``).
+            filepath: Source file path (defaults to platform user data directory).
 
         Returns:
             Populated ``SaveData`` container.
         """
-        target = Path(filepath) if filepath is not None else DEFAULT_SAVE_FILE
+        target = Path(filepath) if filepath is not None else get_save_path()
         if not target.is_file():
             return cls()
 

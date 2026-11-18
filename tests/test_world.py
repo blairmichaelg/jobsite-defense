@@ -10,7 +10,7 @@ from src.level import load_level
 from src.save import SaveData
 from src.settings import NAIL_GUNNER_COST, NAIL_GUNNER_TIER2_COST
 from src.tower import ConcretePump, NailGunner
-from src.world import World
+from src.world import GameEvent, World
 
 _DEFAULT_LEVEL = load_level("level_1.json")
 ROAD_CELLS = _DEFAULT_LEVEL.road_cells
@@ -144,3 +144,36 @@ class TestWorldPerks:
         # Base was 25.0 + 5.0 bonus = 30.0
         assert tower.base_damage == 30.0
         assert tower.effective_damage == 30.0
+
+
+class TestWorldEventBus:
+    """Validate World event bus emission and draining."""
+
+    def test_build_upgrade_and_sell_emit_events(self) -> None:
+        """Actions emit structured Event objects drained by drain_events()."""
+        world = World(economy=Economy(project_budget=2000))
+
+        # Build NailGunner
+        world.try_build(0, 3, NAIL_GUNNER_COST, "nail_gunner")
+        # Upgrade to Tier 2
+        world.try_upgrade_tower(0, 3)
+        # Sell tower
+        world.sell_tower(0, 3)
+
+        assert len(world.events) == 3
+        ev_build, ev_upgrade, ev_sell = world.events
+
+        assert ev_build.kind == GameEvent.BUILD
+        assert ev_build.data["tower_type"] == "nail_gunner"
+        assert ev_build.data["col"] == 0
+        assert ev_build.data["row"] == 3
+
+        assert ev_upgrade.kind == GameEvent.UPGRADE
+        assert ev_upgrade.data["level"] == 2
+
+        assert ev_sell.kind == GameEvent.SELL
+        assert ev_sell.data["refund"] == int((500 + 300) * 0.7)
+
+        drained = world.drain_events()
+        assert len(drained) == 3
+        assert len(world.events) == 0

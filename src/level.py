@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from src.settings import CELL_SIZE, GRID_COLS
+from src.settings import CELL_SIZE, GRID_COLS, GRID_ROWS
 from src.settings import POWERUP_COLORS as POWERUP_COLORS  # re-export
 
 if TYPE_CHECKING:
@@ -110,7 +110,9 @@ def _build_road(wps: tuple[tuple[int, int], ...]) -> frozenset[tuple[int, int]]:
             raise ValueError(
                 f"Diagonal segment ({c1},{r1})→({c2},{r2}) is not supported."
             )
-    return frozenset((c, r) for (c, r) in cells if 0 <= c < GRID_COLS)
+    return frozenset(
+        (c, r) for (c, r) in cells if 0 <= c < GRID_COLS and 0 <= r < GRID_ROWS
+    )
 
 
 def _waypoint_pixels(
@@ -237,9 +239,18 @@ def load_level(filepath: str | Path) -> LevelData:
     raw_waves = data.get("waves", [])
     waves: list[WaveSpec] = []
     for w in raw_waves:
-        enemy_str = str(w.get("enemy", "Rotted2x4")).lower().replace(" ", "").replace("_", "")
-        enemy_cls = enemy_registry.get(enemy_str, Rotted2x4)
+        enemy_raw = w.get("enemy")
+        if enemy_raw is None:
+            raise LevelError(f"Wave specification in level '{name}' missing 'enemy' field")
+        enemy_str = str(enemy_raw).lower().replace(" ", "").replace("_", "")
+        if enemy_str not in enemy_registry:
+            raise LevelError(f"Unknown enemy '{enemy_raw}' in wave definition for level '{name}'")
+        enemy_cls = enemy_registry[enemy_str]
+
         path_name = str(w.get("path", "main"))
+        if path_name not in paths:
+            raise LevelError(f"Wave references undefined path '{path_name}' in level '{name}'")
+
         waves.append(
             WaveSpec(
                 enemy=enemy_cls,

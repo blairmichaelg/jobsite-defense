@@ -37,20 +37,12 @@ from src.settings import (
     RAIN_CLOUD_BOUNTY,
     RAIN_CLOUD_HEALTH,
     RAIN_CLOUD_SPEED,
+    STUN_LOCKOUT_BOSS,
+    STUN_LOCKOUT_REGULAR,
 )
 
 if TYPE_CHECKING:
     from src.world import World
-
-
-def _get_default_pixels() -> tuple[tuple[float, float], ...]:
-    """Lazy loader for default route pixels to avoid circular imports."""
-    try:
-        from src.level import load_level
-
-        return load_level("level_1.json").primary_path.pixels
-    except Exception:
-        return ((0.0, 0.0), (100.0, 100.0))
 
 
 @dataclass
@@ -116,9 +108,9 @@ class Enemy:
     def __post_init__(self) -> None:
         """Initialize position from path if not explicitly provided."""
         if not self.path:
-            self.path = _get_default_pixels()
+            raise ValueError("Enemy requires a valid non-empty path tuple.")
 
-        if self.pos.x == 0.0 and self.pos.y == 0.0 and self.path:
+        if self.pos.x == 0.0 and self.pos.y == 0.0:
             self.pos = pygame.Vector2(*self.path[0])
 
     # ------------------------------------------------------------------
@@ -142,12 +134,14 @@ class Enemy:
             current.duration = max(current.duration, dur)
 
     def apply_stun(self, dur: float) -> None:
-        """Apply a stun debuff, respecting boss stun-lockout immunity."""
+        """Apply a stun debuff, respecting stun-lockout immunity."""
         if self._stun_lockout > 0.0:
             return
         self.modifiers["stun"] = StunModifier(duration=dur)
         if self.is_boss:
-            self._stun_lockout = dur + 3.0
+            self._stun_lockout = dur + STUN_LOCKOUT_BOSS
+        else:
+            self._stun_lockout = dur + STUN_LOCKOUT_REGULAR
 
     def _tick_modifiers(self, dt: float) -> None:
         """Tick all active status effects and update boss stun lockout."""

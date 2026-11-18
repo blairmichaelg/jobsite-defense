@@ -28,12 +28,13 @@ from src.settings import (
     NAIL_GUNNER_TIER2_COST,
     NAIL_GUNNER_TIER3_COST,
 )
-from src.tower import ConcretePump, NailGunner, TarpCannon, Tower
+from src.tower import BUILDABLE, ConcretePump, NailGunner, TarpCannon, Tower
 from src.world import World
 
 _DEFAULT_LEVEL = load_level("level_1.json")
 POWERUP_TILES = _DEFAULT_LEVEL.powerup_tiles
 ROAD_CELLS = _DEFAULT_LEVEL.road_cells
+TEST_PATH: tuple[tuple[float, float], ...] = ((0.0, 0.0), (1000.0, 1000.0))
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,7 +80,7 @@ class TestModifiers:
         """Tower on a 'range' tile must scale effective_range by the multiplier."""
         col, row = _find_cell_with_effect("range")
         _effect, mult = POWERUP_TILES[(col, row)]
-        tower = NailGunner(col=col, row=row)
+        tower = NailGunner(col=col, row=row, powerup_tile=POWERUP_TILES[(col, row)])
         assert tower.effective_range == pytest.approx(NAIL_GUNNER_RANGE * mult)
         assert tower.effective_damage == pytest.approx(NAIL_GUNNER_DAMAGE)
         assert tower.effective_cooldown == pytest.approx(NAIL_GUNNER_COOLDOWN)
@@ -88,7 +89,7 @@ class TestModifiers:
         """Tower on a 'damage' tile must scale effective_damage by the multiplier."""
         col, row = _find_cell_with_effect("damage")
         _effect, mult = POWERUP_TILES[(col, row)]
-        tower = NailGunner(col=col, row=row)
+        tower = NailGunner(col=col, row=row, powerup_tile=POWERUP_TILES[(col, row)])
         assert tower.effective_damage == pytest.approx(NAIL_GUNNER_DAMAGE * mult)
         assert tower.effective_range == pytest.approx(NAIL_GUNNER_RANGE)
         assert tower.effective_cooldown == pytest.approx(NAIL_GUNNER_COOLDOWN)
@@ -97,7 +98,7 @@ class TestModifiers:
         """Tower on an 'attack_speed' tile must divide cooldown_max by multiplier."""
         col, row = _find_cell_with_effect("attack_speed")
         _effect, mult = POWERUP_TILES[(col, row)]
-        tower = NailGunner(col=col, row=row)
+        tower = NailGunner(col=col, row=row, powerup_tile=POWERUP_TILES[(col, row)])
         assert tower.effective_cooldown == pytest.approx(NAIL_GUNNER_COOLDOWN / mult)
         assert tower.effective_range == pytest.approx(NAIL_GUNNER_RANGE)
         assert tower.effective_damage == pytest.approx(NAIL_GUNNER_DAMAGE)
@@ -107,7 +108,7 @@ class TestModifiers:
         for (col, row) in list(POWERUP_TILES.keys()) + [_find_plain_grass_cell()]:
             if (col, row) in ROAD_CELLS:
                 continue
-            tower = NailGunner(col=col, row=row)
+            tower = NailGunner(col=col, row=row, powerup_tile=POWERUP_TILES.get((col, row)))
             assert tower._range_sq == pytest.approx(tower.effective_range ** 2), (  # noqa: SLF001
                 f"_range_sq mismatch at ({col},{row})"
             )
@@ -115,8 +116,20 @@ class TestModifiers:
     def test_attack_speed_faster_than_base(self) -> None:
         """effective_cooldown on attack_speed tile must be shorter than base."""
         col, row = _find_cell_with_effect("attack_speed")
-        tower = NailGunner(col=col, row=row)
+        tower = NailGunner(col=col, row=row, powerup_tile=POWERUP_TILES[(col, row)])
         assert tower.effective_cooldown < NAIL_GUNNER_COOLDOWN
+
+    def test_no_backdoor_powerup_lookup_without_tile_param(self) -> None:
+        """Tower on powerup cell without powerup_tile passed must not read disk."""
+        col, row = _find_cell_with_effect("attack_speed")
+        tower = NailGunner(col=col, row=row)
+        assert tower.effective_cooldown == pytest.approx(NAIL_GUNNER_COOLDOWN)
+        assert tower.effective_damage == pytest.approx(NAIL_GUNNER_DAMAGE)
+        assert tower.effective_range == pytest.approx(NAIL_GUNNER_RANGE)
+
+    def test_buildable_registry_contents(self) -> None:
+        """BUILDABLE contains all constructible tower classes."""
+        assert (NailGunner, ConcretePump, TarpCannon) == BUILDABLE
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +171,7 @@ class TestCombat:
         col, row = _find_plain_grass_cell()
         tower = NailGunner(col=col, row=row)
         enemy = Enemy(
+            path=TEST_PATH,
             pos=pygame.Vector2(tower.center.x + 20, tower.center.y),
             health=10.0,
             bounty=15,
@@ -175,6 +189,7 @@ class TestCombat:
         tower = NailGunner(col=col, row=row)
         tower.is_disabled = True
         enemy = Enemy(
+            path=TEST_PATH,
             pos=pygame.Vector2(tower.center.x + 20, tower.center.y),
             health=10.0,
         )
@@ -237,7 +252,9 @@ class TestTowerUpgrades:
         t_scaffold.upgrade()
         t_scaffold.upgrade()  # Tier 3
 
-        cloud = RainCloud(pos=pygame.Vector2(t_ground.center.x + 30, t_ground.center.y))
+        cloud = RainCloud(
+            path=TEST_PATH, pos=pygame.Vector2(t_ground.center.x + 30, t_ground.center.y)
+        )
 
         # Ground tower finds no target
         assert t_ground._nearest_enemy([cloud]) is None  # noqa: SLF001
@@ -290,8 +307,12 @@ class TestConcretePumpAndGlob:
         col, row = _find_plain_grass_cell()
         pump = ConcretePump(col=col, row=row)
         # Enemy moving horizontally at 100 px/s
+        start_x = pump.center.x + 100
+        start_y = pump.center.y
+        path = ((start_x, start_y), (start_x + 1000.0, start_y))
         enemy = Rotted2x4(
-            pos=pygame.Vector2(pump.center.x + 100, pump.center.y),
+            path=path,
+            pos=pygame.Vector2(start_x, start_y),
             speed=100.0,
         )
         world = World(enemies=[enemy])
@@ -319,8 +340,8 @@ class TestConcretePumpAndGlob:
             damage=5.0,
         )
 
-        e1 = Rotted2x4(pos=pygame.Vector2(220, 200), health=50.0)
-        e2 = Rotted2x4(pos=pygame.Vector2(400, 400), health=50.0)
+        e1 = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(220, 200), health=50.0)
+        e2 = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(400, 400), health=50.0)
 
         world = World(enemies=[e1, e2], projectiles=[glob])
 
@@ -360,9 +381,9 @@ class TestTarpCannonAndProjectile:
         cannon.center = pygame.Vector2(200, 200)
 
         # Ground enemy is closer (50px away)
-        ground_creep = Rotted2x4(pos=pygame.Vector2(250, 200))
+        ground_creep = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(250, 200))
         # Flying enemy is further but within range (100px away < 160px)
-        air_creep = RainCloud(pos=pygame.Vector2(300, 200))
+        air_creep = RainCloud(path=TEST_PATH, pos=pygame.Vector2(300, 200))
 
         world = World(enemies=[ground_creep, air_creep])
         target = cannon._nearest_enemy(world.enemies)
@@ -374,7 +395,7 @@ class TestTarpCannonAndProjectile:
         cannon = TarpCannon(col=4, row=4)
         cannon.center = pygame.Vector2(200, 200)
 
-        ground_creep = Rotted2x4(pos=pygame.Vector2(250, 200))
+        ground_creep = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(250, 200))
         world = World(enemies=[ground_creep])
 
         target = cannon._nearest_enemy(world.enemies)
@@ -384,7 +405,7 @@ class TestTarpCannonAndProjectile:
         """Updating TarpCannon when target in range spawns a TarpProjectile."""
         cannon = TarpCannon(col=4, row=4)
         cannon.center = pygame.Vector2(200, 200)
-        cloud = RainCloud(pos=pygame.Vector2(260, 200))
+        cloud = RainCloud(path=TEST_PATH, pos=pygame.Vector2(260, 200))
         world = World(enemies=[cloud])
 
         cannon.update(0.1, world)
@@ -396,7 +417,7 @@ class TestTarpCannonAndProjectile:
 
     def test_tarp_projectile_homes_and_damages(self) -> None:
         """TarpProjectile moves toward target, hits, and deals damage."""
-        cloud = RainCloud(pos=pygame.Vector2(220, 200), health=60.0)
+        cloud = RainCloud(path=TEST_PATH, pos=pygame.Vector2(220, 200), health=60.0)
         proj = TarpProjectile(
             pos=pygame.Vector2(200, 200),
             target=cloud,
@@ -413,7 +434,7 @@ class TestTarpCannonAndProjectile:
 
     def test_tarp_projectile_awards_bounty_on_kill(self) -> None:
         """Killing an enemy with a TarpProjectile grants its bounty to the world."""
-        cloud = RainCloud(pos=pygame.Vector2(205, 200), health=5.0)
+        cloud = RainCloud(path=TEST_PATH, pos=pygame.Vector2(205, 200), health=5.0)
         proj = TarpProjectile(
             pos=pygame.Vector2(200, 200),
             target=cloud,
@@ -455,7 +476,7 @@ class TestTarpCannonAndProjectile:
         cannon.center = pygame.Vector2(200, 200)
         cannon.upgrade_level = 2
 
-        cloud = RainCloud(pos=pygame.Vector2(220, 200), health=60.0)
+        cloud = RainCloud(path=TEST_PATH, pos=pygame.Vector2(220, 200), health=60.0)
         world = World(enemies=[cloud])
 
         cannon.update(0.1, world)
@@ -478,7 +499,7 @@ class TestTarpCannonAndProjectile:
         cannon.center = pygame.Vector2(200, 200)
         cannon.upgrade_level = 3
 
-        creep = Rotted2x4(pos=pygame.Vector2(220, 200), health=60.0)
+        creep = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(220, 200), health=60.0)
         world = World(enemies=[creep])
 
         cannon.update(0.1, world)
@@ -494,8 +515,8 @@ class TestTarpCannonAndProjectile:
 
     def test_tarp_projectile_retargets_when_original_target_dies(self) -> None:
         """If original target dies mid-flight, TarpProjectile retargets closest living enemy."""
-        original = Rotted2x4(pos=pygame.Vector2(250, 200), health=10.0)
-        second = Rotted2x4(pos=pygame.Vector2(260, 200), health=50.0)
+        original = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(250, 200), health=10.0)
+        second = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(260, 200), health=50.0)
 
         proj = TarpProjectile(
             pos=pygame.Vector2(200, 200),
@@ -515,7 +536,7 @@ class TestTarpCannonAndProjectile:
 
     def test_tarp_projectile_dies_if_no_enemies_left_to_retarget(self) -> None:
         """If all enemies are dead, TarpProjectile marks alive=False."""
-        original = Rotted2x4(pos=pygame.Vector2(250, 200), health=10.0)
+        original = Rotted2x4(path=TEST_PATH, pos=pygame.Vector2(250, 200), health=10.0)
         proj = TarpProjectile(
             pos=pygame.Vector2(200, 200),
             target=original,
@@ -523,6 +544,11 @@ class TestTarpCannonAndProjectile:
             damage=10.0,
         )
         world = World(enemies=[original], projectiles=[proj])
+
+        original.alive = False
+        proj.update(0.1, world)
+        assert proj.alive is False
+        assert proj.target is None
 
         original.alive = False
         proj.update(0.1, world)

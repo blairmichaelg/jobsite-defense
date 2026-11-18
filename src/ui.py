@@ -25,8 +25,6 @@ from src.grid import cell_rect
 from src.protocols import Clickable, Entity
 from src.settings import (
     CELL_SIZE,
-    CONCRETE_PUMP_COST,
-    NAIL_GUNNER_COST,
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
 )
@@ -49,8 +47,8 @@ _COLOR_BUTTON_COST_NO: tuple[int, int, int] = (220, 80, 80)
 _COLOR_BUTTON_REFUND: tuple[int, int, int] = (100, 200, 255)
 
 _BUTTON_RADIUS: int = 36       # pixel radius of each radial button
-_ORBIT_RADIUS: int = 70        # distance from menu centre to button centre
-_ANGLES: tuple[float, float] = (90.0, 270.0)
+_ORBIT_RADIUS: int = 80        # distance from menu centre to button centre
+_ANGLES: tuple[float, ...] = (90.0, 270.0, 0.0, 180.0, 45.0, 135.0, 225.0, 315.0)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +63,7 @@ class _MenuButton:
     angle_deg: float
     center: pygame.Vector2
     subtext: str | None = None
+    enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -114,19 +113,20 @@ class RadialMenu:
         for btn in self._buttons:
             bc = (int(btn.center.x), int(btn.center.y))
             dist = math.hypot(mouse_pos[0] - bc[0], mouse_pos[1] - bc[1])
-            hovering = dist <= _BUTTON_RADIUS
+            hovering = dist <= _BUTTON_RADIUS and btn.enabled
 
             can_afford = (
                 self._world.economy.can_afford(btn.cost)
                 if btn.cost > 0
                 else True
             )
+            is_active = btn.enabled and can_afford
 
             # Circle background
             overlay = pygame.Surface(
                 (_BUTTON_RADIUS * 2, _BUTTON_RADIUS * 2), pygame.SRCALPHA
             )
-            if not can_afford:
+            if not is_active:
                 bg_color = _COLOR_BUTTON_DISABLED
             elif hovering:
                 bg_color = _COLOR_BUTTON_HOVER
@@ -139,21 +139,19 @@ class RadialMenu:
             surface.blit(overlay, (bc[0] - _BUTTON_RADIUS, bc[1] - _BUTTON_RADIUS))
 
             # Border
-            if not can_afford:
+            if not is_active:
                 border_color = _COLOR_BUTTON_TEXT_DISABLED
             elif btn.action == "sell":
                 border_color = _COLOR_BUTTON_REFUND
-            elif can_afford:
-                border_color = _COLOR_BUTTON_COST_OK
             else:
-                border_color = _COLOR_BUTTON_COST_NO
+                border_color = _COLOR_BUTTON_COST_OK
 
             pygame.draw.circle(surface, border_color, bc, _BUTTON_RADIUS, width=2)
 
             # Text
             if self._font_label and self._font_cost:
                 text_color = (
-                    _COLOR_BUTTON_TEXT_DISABLED if not can_afford else _COLOR_BUTTON_TEXT
+                    _COLOR_BUTTON_TEXT_DISABLED if not is_active else _COLOR_BUTTON_TEXT
                 )
                 lbl = self._font_label.render(btn.label, True, text_color)
                 surface.blit(lbl, lbl.get_rect(center=(bc[0], bc[1] - 7)))
@@ -161,7 +159,7 @@ class RadialMenu:
                 if btn.subtext:
                     sub_color = (
                         _COLOR_BUTTON_TEXT_DISABLED
-                        if not can_afford
+                        if not is_active
                         else _COLOR_BUTTON_REFUND
                     )
                     sub_surf = self._font_cost.render(btn.subtext, True, sub_color)
@@ -169,7 +167,7 @@ class RadialMenu:
                 elif btn.cost > 0:
                     cost_color = (
                         _COLOR_BUTTON_TEXT_DISABLED
-                        if not can_afford
+                        if not is_active
                         else _COLOR_BUTTON_COST_OK
                     )
                     cost_surf = self._font_cost.render(f"${btn.cost}", True, cost_color)
@@ -198,6 +196,8 @@ class RadialMenu:
                         bc = (int(btn.center.x), int(btn.center.y))
                         dist = math.hypot(event.pos[0] - bc[0], event.pos[1] - bc[1])
                         if dist <= _BUTTON_RADIUS:
+                            if not btn.enabled:
+                                return True  # Disabled button: consumed without action
                             if (
                                 self._world is not None
                                 and btn.cost > 0
@@ -240,7 +240,10 @@ class RadialMenu:
         return True
 
     def _place(
-        self, options: Sequence[tuple[str, int, str, str | None]]
+        self,
+        options: Sequence[
+            tuple[str, int, str, str | None] | tuple[str, int, str, str | None, bool]
+        ],
     ) -> list[_MenuButton]:
         """Compute button placements using _ANGLES with strict boundary clamping.
 
@@ -248,7 +251,9 @@ class RadialMenu:
         [_BUTTON_RADIUS, WINDOW_WIDTH - _BUTTON_RADIUS] so no button is cut off.
         """
         buttons: list[_MenuButton] = []
-        for i, (label, cost, action, subtext) in enumerate(options):
+        for i, opt in enumerate(options):
+            label, cost, action, subtext = opt[0], opt[1], opt[2], opt[3]
+            enabled = opt[4] if len(opt) > 4 else True
             angle = _ANGLES[i % len(_ANGLES)]
             rad = math.radians(angle)
             raw_x = self._menu_center.x + math.cos(rad) * _ORBIT_RADIUS
@@ -270,6 +275,7 @@ class RadialMenu:
                     angle_deg=angle,
                     center=pygame.Vector2(clamped_x, clamped_y),
                     subtext=subtext,
+                    enabled=enabled,
                 )
             )
         return buttons
@@ -286,20 +292,22 @@ class RadialMenu:
             up_cost = tower.next_upgrade_cost
             up_name = tower.next_upgrade_name
 
-            upgrade_tuple: tuple[str, int, str, str | None]
+            upgrade_tuple: tuple[str, int, str, str | None, bool]
             if up_cost is not None and up_name is not None:
-                upgrade_tuple = (up_name, up_cost, "upgrade", None)
+                upgrade_tuple = (up_name, up_cost, "upgrade", None, True)
             else:
-                upgrade_tuple = ("Max Tier", 0, "upgrade", "MAX")
+                upgrade_tuple = ("Max Tier", 0, "noop", "MAX", False)
 
-            options = [
-                ("Sell", 0, "sell", f"+${refund}"),
+            options: list[tuple[str, int, str, str | None, bool]] = [
+                ("Sell", 0, "sell", f"+${refund}", True),
                 upgrade_tuple,
             ]
         else:
+            from src.tower import BUILDABLE
+
             options = [
-                ("Nail Gunner", NAIL_GUNNER_COST, "nail_gunner", None),
-                ("Concrete Pump", CONCRETE_PUMP_COST, "concrete_pump", None),
+                (cls.NAME, cls.COST, cls.TYPE_KEY, None, True)
+                for cls in BUILDABLE
             ]
 
         self._buttons = self._place(options)

@@ -249,3 +249,37 @@ class TestTalentTreeScene:
 
         assert consumed is True
         assert isinstance(sm.current, TitleScene)
+
+    def test_gameplay_scene_entity_caching(self) -> None:
+        """GameplayScene._build_entity_list reuses cached list until marked dirty."""
+        sm = SceneManager()
+        save = SaveData()
+        gameplay = GameplayScene("level_1.json", save, sm)
+        gameplay._ensure_assets()
+
+        list1 = gameplay._build_entity_list()
+        assert gameplay._dirty is False
+
+        list2 = gameplay._build_entity_list()
+        assert list1 is list2  # Exact same cached object!
+
+        # Mark dirty
+        gameplay._dirty = True
+        list3 = gameplay._build_entity_list()
+        assert gameplay._dirty is False
+        assert list3 == list1
+
+    def test_title_and_level_select_handle_level_error(self) -> None:
+        """TitleScene and LevelSelectScene safely catch LevelError on bad level files."""
+        sm = SceneManager()
+        title = TitleScene(sm)
+        res = title._start_level("nonexistent_level_abc.json")
+        assert res is False
+        assert title.last_error is not None
+        assert "not found" in title.last_error
+
+        lvl_select = LevelSelectScene(sm, SaveData())
+        res2 = lvl_select._start_level("nonexistent_level_abc.json")
+        assert res2 is False
+        assert lvl_select.last_error is not None
+        assert "not found" in lvl_select.last_error

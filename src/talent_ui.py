@@ -122,9 +122,15 @@ class TalentTreeScene:
                         opt.perk_id not in self.save_data.perks
                         and self.save_data.equity >= opt.cost
                     ):
+                        old_equity = self.save_data.equity
+                        old_perks = set(self.save_data.perks)
                         self.save_data.equity -= opt.cost
                         self.save_data.perks.add(opt.perk_id)
-                        self.save_data.save()
+                        try:
+                            self.save_data.save()
+                        except Exception:
+                            self.save_data.equity = old_equity
+                            self.save_data.perks = old_perks
                     return True
 
         return False

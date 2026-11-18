@@ -10,7 +10,10 @@ Phase 6 changes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Any
+
+import pygame
 
 from src.economy import Economy
 from src.enemy import Enemy
@@ -27,6 +30,28 @@ KILL_BOUNTY: int = 15
 """Default dollars awarded per enemy killed."""
 
 
+class GameEvent(Enum):
+    """Event types broadcasted to the world event queue."""
+
+    SHOT = auto()
+    KILL = auto()
+    LEAK = auto()
+    BUILD = auto()
+    SELL = auto()
+    UPGRADE = auto()
+    STUN = auto()
+    SPLASH = auto()
+
+
+@dataclass
+class Event:
+    """A single game event recording an action and its coordinates."""
+
+    kind: GameEvent
+    pos: pygame.Vector2
+    data: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class World:
     """Shared game-state context passed to every ``Entity.update``.
@@ -38,6 +63,7 @@ class World:
         towers: Spatial map of placed towers — ``{(col, row): Tower}``.
         economy: Shared economy tracking budget and patience.
         save_data: Active meta-progression state and unlocked perks.
+        events: Event queue collected during updates.
         kill_bounty: Default fallback bounty amount.
         _pending_earn: Accumulated bounties to pay out this frame.
     """
@@ -48,6 +74,7 @@ class World:
     towers: dict[tuple[int, int], Tower] = field(default_factory=dict)
     economy: Economy = field(default_factory=Economy)
     save_data: SaveData = field(default_factory=SaveData)
+    events: list[Event] = field(default_factory=list)
     kill_bounty: int = KILL_BOUNTY
     _pending_earn: int = field(default=0, init=False)
 
@@ -55,6 +82,16 @@ class World:
         """Apply passive starting perks (e.g. Union Dues starting cash)."""
         if "union_dues" in self.save_data.perks:
             self.economy.project_budget += 250
+
+    def emit(self, kind: GameEvent, pos: pygame.Vector2, **data: Any) -> None:
+        """Record a new event to the frame's event queue."""
+        self.events.append(Event(kind=kind, pos=pygame.Vector2(pos), data=data))
+
+    def drain_events(self) -> list[Event]:
+        """Drain and return all queued events for this frame."""
+        ev = self.events
+        self.events = []
+        return ev
 
     # ------------------------------------------------------------------
     # Economy & Bounty Queue
@@ -129,6 +166,7 @@ class World:
         tower.invested = actual_cost
         self.apply_perks(tower)
         self.towers[(col, row)] = tower
+        self.emit(GameEvent.BUILD, tower.center, tower_type=tower_type, col=col, row=row)
         return True
 
     def try_upgrade_tower(self, col: int, row: int) -> bool:
@@ -149,6 +187,14 @@ class World:
             return False
 
         tower.upgrade()
+        self.emit(
+            GameEvent.UPGRADE,
+            tower.center,
+            level=tower.upgrade_level,
+            name=tower.next_upgrade_name or "Max Tier",
+            col=col,
+            row=row,
+        )
         return True
 
     def sell_tower(self, col: int, row: int) -> None:
@@ -159,3 +205,4 @@ class World:
         refund = int(tower.invested * 0.7)
         if refund > 0:
             self.economy.earn(refund)
+        self.emit(GameEvent.SELL, tower.center, refund=refund, col=col, row=row)

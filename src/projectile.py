@@ -84,7 +84,10 @@ class ConcreteGlob:
 
     def _detonate(self, world: World) -> None:
         """Explode, damaging and slowing all enemies in splash range."""
+        from src.world import GameEvent
+
         self.alive = False
+        world.emit(GameEvent.SPLASH, self.pos, radius=self.splash_radius)
 
         for enemy in world.enemies:
             if not enemy.alive:
@@ -181,7 +184,10 @@ class TarpProjectile:
 
                 # Tier 3 EMP Net: 1.5s stun to targets
                 if self.stun_duration is not None:
+                    from src.world import GameEvent
+
                     self.target.apply_stun(self.stun_duration)
+                    world.emit(GameEvent.STUN, self.pos, duration=self.stun_duration)
 
                 if was_alive and not self.target.alive:
                     world.request_earn(self.target.bounty)
