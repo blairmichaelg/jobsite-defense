@@ -1,10 +1,11 @@
 """Jobsite Defense — scene architecture and screen state manager.
 
-Phase 6 addition:
-- Formal `Scene` protocol with handle_event, update, and draw.
-- Stack-based `SceneManager` supporting push, pop, and replace.
-- Specific scenes: `TitleScene`, `LevelSelectScene`, `GameplayScene`, and `PauseScene`.
-- Decouples UI, HUD rendering, and event routing from the root main loop.
+Defines the formal ``Scene`` protocol and the stack-based ``SceneManager``:
+- ``TitleScene``: Contract selection, talent tree access, and quit options.
+- ``LevelSelectScene``: Blueprint selection with safe level load error handling.
+- ``GameplayScene``: Active match simulation with dirty-flag entity caching,
+  event drainage, and dynamic HUD updates.
+- ``PauseScene``: Modal overlay intercepting input and preserving background render.
 """
 
 from __future__ import annotations

@@ -1,12 +1,9 @@
-"""Jobsite Defense — wave management and creep spawning.
+"""Jobsite Defense — wave management and creep spawning lifecycle.
 
-Phase 4 changes
----------------
-* Typed Waves: ``WaveSpec`` dataclass holding ``enemy: type[Enemy]``, ``count: int``,
-  and ``interval: float``.
-* Initial State: ``WaveManager`` starts in ``COOLDOWN`` (15s breather) before Wave 1.
-* Includes all Phase 4 archetypes: ``Rotted2x4``, ``HOABoardMember``, ``RainCloud``,
-  and the ``OshaInspector`` boss finale.
+Coordinates timed waves of enemy incursions:
+- ``WaveSpec``: Immutable wave configuration (enemy class, count, spawn interval, route).
+- ``WaveManager``: Lifecycle state machine (COOLDOWN -> SPAWNING -> ACTIVE -> VICTORY)
+  satisfying the ``Entity`` protocol at layer 5.
 """
 
 from __future__ import annotations

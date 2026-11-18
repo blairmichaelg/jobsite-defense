@@ -1,12 +1,13 @@
-"""Jobsite Defense — enemy entity, archetypes, and movement.
+"""Jobsite Defense — enemy entities, status modifiers, and navigation.
 
-Phase 6 updates:
-- Stun status framework with boss stun-lockout immunity (_stun_lockout).
-- Centralized modifier ticking (_tick_modifiers).
-- Multi-modifier travel budget accounting for overlapping stun and speed debuffs.
-- Route decoupling: Enemy.path holds route pixels from world.level.paths.
-- RainCloud flies from path[0] to path[-1].
-- OSHA Inspector stops radiating aura when stunned.
+Defines the base ``Enemy`` class and specific hostile creep archetypes:
+- ``Rotted2x4``: Basic balanced foot soldier.
+- ``HOABoardMember``: Rapid low-health swarm unit.
+- ``RainCloud``: Flying hazard bypassing ground paths directly to the exit.
+- ``OshaInspector``: High-health boss radiating a Stop-Work Order aura that
+  disables towers within 150px unless stunned.
+Includes multi-modifier status effect processing (slows, stuns, diminishing
+return lockouts) and predictive target-leading movement simulation.
 """
 
 from __future__ import annotations

@@ -1,8 +1,13 @@
 [project]
 name = "jobsite-defense"
-version = "0.2.0"
+version = "0.6.0"
 description = "Jobsite Defense — 2D Tower Defense in Python 3.11 + Pygame-CE"
+readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+    { name = "Michael Blair" }
+]
+keywords = ["tower-defense", "pygame", "pygame-ce", "game-dev", "python-3-11"]
 dependencies = ["pygame-ce==2.5.8"]
 
 # ---------------------------------------------------------------------------

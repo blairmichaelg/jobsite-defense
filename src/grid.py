@@ -1,10 +1,7 @@
-"""Jobsite Defense — grid rendering utilities.
+"""Jobsite Defense — grid geometry and cell coordinate utilities.
 
-Phase 1.5: removed ``x: int`` / ``y: int`` local-variable annotations
-(they were annotation noise on simple assignments; type checkers infer
-these trivially).  The ``draw_background`` and ``draw_grid_lines``
-functions are retained for standalone use; the main path calls
-``build_static_layer`` instead.
+Provides coordinate math and bounding rectangle lookups for the 16x12 cell grid,
+along with baseline raster routines for background fills and overlay lines.
 """
 
 from __future__ import annotations

@@ -1,9 +1,9 @@
 """Jobsite Defense — Economy manager.
 
-Phase 2.5 addition
-------------------
-``earn(amount)`` credits the project budget.  Called by the main loop
-when a tower kills an enemy (via ``World.flush_earnings``).
+Tracks player financial resources (Project Budget) and client goodwill (Patience lives):
+- Guards expenditures against overdrafts with atomic spending validation.
+- Credits bounties earned from eliminated enemies.
+- Tracks loss of patience on escaped creeps to signal contract termination.
 """
 
 from __future__ import annotations

@@ -1,10 +1,9 @@
-"""Jobsite Defense — World context object.
+"""Jobsite Defense — World simulation context and event bus.
 
-Phase 6 changes:
-- Decoupled level geometry: World owns `level: LevelData`.
-- Meta-progression integration: World holds `save_data: SaveData`.
-- Perk application: `apply_perks()` buffs newly built towers (e.g. better_ammo)
-  and grants starting budget bonuses (union_dues).
+Acts as the single source of truth for active match state:
+- Owns active ``LevelData`` geometry, towers, alive creeps, and projectiles.
+- Broadcasts structured ``Event`` objects across the ``GameEvent`` bus.
+- Coordinates economy transactions, aura refreshes, and talent perks.
 """
 
 from __future__ import annotations

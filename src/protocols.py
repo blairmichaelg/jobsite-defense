@@ -1,15 +1,9 @@
 """Jobsite Defense — shared structural protocols.
 
-Phase 2.5 change
-----------------
-``Entity.update`` now takes a ``world: Any`` second argument so entities
-can read and write shared game state (enemy list, economy, etc.) without
-holding module-level references.  ``Any`` is used for the type annotation
-to avoid a circular import between ``protocols.py`` and ``world.py``;
-callers that need the concrete type import ``World`` directly from
-``src.world``.
-
-``Clickable`` is unchanged.
+Defines runtime-checkable protocols enforcing consistent architecture:
+- ``Entity``: Update and draw contracts with integer layer ordering.
+- ``Clickable``: Event handling contract returning consumption booleans.
+- ``Projectile``: Active ballistic/homing entities with liveness tracking.
 """
 
 from __future__ import annotations

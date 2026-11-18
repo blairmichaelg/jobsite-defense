@@ -1,8 +1,8 @@
 """Jobsite Defense — meta-progression and persistent save state.
 
 Tracks equity earned from completed contracts (remaining client patience)
-and unlocked talent tree perks.  Writes atomically via temporary files
-to eliminate corruption risks.
+and unlocked talent tree perks. Writes atomically to temporary files with
+OS buffer flushing and retry logic to prevent Windows file-locking corruption.
 """
 
 from __future__ import annotations

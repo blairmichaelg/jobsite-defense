@@ -1,7 +1,9 @@
-"""Jobsite Defense — level data: declarative JSON loading and geometry.
+"""Jobsite Defense — declarative JSON level loading, validation, and multi-path geometry.
 
-Phase 6: Decoupled JSON loading with multi-path routing support,
-strict validation (LevelError), and path-relative resolution.
+Parses contract specifications from ``levels/`` into immutable ``LevelData``:
+- Validates waypoint sequences and rasterises orthogonal road segments.
+- Enforces road/power-up non-overlap guarantees.
+- Strictly verifies wave archetype strings and path names.
 """
 
 from __future__ import annotations

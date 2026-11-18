@@ -1,9 +1,8 @@
-"""Jobsite Defense — global constants and configuration.
+"""Jobsite Defense — global constants, dimensions, colors, and tuning configuration.
 
-Phase 2 additions
------------------
-* Title bumped to Phase 2.
-* Tower base stats added (Nail Gunner).
+Defines all display geometry, frame rates, color palettes, enemy stats,
+tower combat attributes, upgrade branch costs, power-up multipliers, and
+status effect timers.
 
 Nothing in this module has side effects.
 """

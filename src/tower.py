@@ -1,21 +1,15 @@
-"""Jobsite Defense — tower base class, archetypes, and upgrade trees.
+"""Jobsite Defense — tower base class, defensive archetypes, and upgrade branches.
 
-Phase 4 changes
----------------
-* Created ``Tower`` base class with:
-  - ``COST`` and ``invested`` tracking total dollars spent (purchase + upgrades).
-  - ``is_disabled`` state triggered by OSHA Inspector aura (freezes update, draws red X).
-  - ``can_target_air`` capability checking (RainCloud targeting).
-  - ``upgrade_level: int = 1`` and ``upgrade()`` system.
-  - Common selection and range ring rendering.
-* ``TOWER_TYPES`` dictionary registry mapping tower type strings to subclasses.
-* Target leading for ``ConcretePump``: computes flight time and aims at ``target.predict_pos()``.
-* **NailGunner Upgrades:**
-  - Tier 2 ($300): "Pneumatic Overdrive" -> Cooldown divided by 2.
-  - Tier 3 ($800): "The Scaffold" -> Range doubled; ``can_target_air = True``.
-* **ConcretePump Upgrades:**
-  - Tier 2 ($450): "Quick-Dry" -> Slow debuff becomes 0.2x.
-  - Tier 3 ($1000): "Cement Truck" -> Doubles splash radius.
+Defines all player-constructible defensive structures:
+- ``Tower``: Abstract base dataclass satisfying ``Entity`` (layer 20) and ``Clickable``.
+- ``NailGunner``: Rapid hit-scan nail driver with Pneumatic Overdrive (T2) and
+  anti-air Scaffold (T3).
+- ``ConcretePump``: Heavy artillery pump launching predictive wet concrete globs
+  with Quick-Dry (T2) and Cement Truck double splash radius (T3).
+- ``TarpCannon``: Rapid anti-air prioritized net launcher firing homing tarps
+  with Sticky Resin slow debuffs (T2) and EMP Net stuns (T3).
+- ``BUILDABLE``: Canonical registry of player-constructible tower types.
+- ``TOWER_TYPES``: Dynamic string-to-class construction mapping.
 """
 
 from __future__ import annotations

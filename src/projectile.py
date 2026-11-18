@@ -1,11 +1,10 @@
-"""Jobsite Defense — projectile entities and splash mechanics.
+"""Jobsite Defense — projectile entities, splash mechanics, and homing ballistics.
 
-Phase 5 additions
------------------
-* ``TarpProjectile``: Fast homing missile launched by ``TarpCannon``.
-  Tracks flying or ground target continuously, deals 10 direct damage,
-  and grants kill bounties.
-* ``ConcreteGlob`` continues to provide predictive AoE concrete splash.
+Defines projectile entities satisfying ``Entity`` (layer 30):
+- ``ConcreteGlob``: Ballistic artillery glob detonating at predictive intercept coordinates,
+  dealing AoE damage and applying slow status debuffs.
+- ``TarpProjectile``: High-velocity homing missile tracking dynamic targets, dealing
+  impact damage, and applying Sticky Resin slows or EMP Net stuns with mid-flight retargeting.
 """
 
 from __future__ import annotations

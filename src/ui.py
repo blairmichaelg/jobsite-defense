@@ -1,15 +1,11 @@
-"""Jobsite Defense — Radial Build Menu.
+"""Jobsite Defense — Contextual Radial Build, Upgrade, and Liquidation Menu.
 
-Phase 4 changes
----------------
-* Safe Menu Layout: ``_place()`` uses ``_ANGLES`` and strictly clamps all button
-  centers between ``[_BUTTON_RADIUS, WINDOW_HEIGHT - _BUTTON_RADIUS]`` and
-  ``[_BUTTON_RADIUS, WINDOW_WIDTH - _BUTTON_RADIUS]``.
-* Upgrades in RadialMenu:
-  - Occupied cell shows "Sell" (refunding 70% of invested capital) and the
-    named next upgrade tier with its precise cost.
-  - Clicks invoke ``world.try_upgrade_tower()``.
-  - Unaffordable upgrades are disabled (greyed out and unclickable).
+Provides mouse-driven radial interaction on grid cells:
+- Empty cells: Displays purchase options populated dynamically from ``BUILDABLE``.
+- Occupied cells: Offers 70% refund liquidation ("Sell") and the next tier upgrade,
+  or a disabled "Max Tier" indicator button once fully upgraded.
+- Boundary Clamping: Orbit placements use an 8-angle preference array clamped
+  safely inside the screen boundaries so row 0 and column 0 cells never clip.
 """
 
 from __future__ import annotations

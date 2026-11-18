@@ -1,6 +1,7 @@
-"""Jobsite Defense — main application entry point.
+"""Jobsite Defense — main application entry point and hardware display lifecycle.
 
-Phase 6: Scene architecture driven game loop.
+Initializes SDL2 video mode with scaling and VSync, loads player progression,
+and runs the high-performance scene-managed game loop.
 """
 
 from __future__ import annotations
