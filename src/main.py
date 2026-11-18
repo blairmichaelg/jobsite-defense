@@ -1,19 +1,15 @@
 """Jobsite Defense — main entry point and game loop.
 
-Phase 2.5 changes
------------------
-* ``World`` context object introduced.  Every ``Entity.update(dt, world)``
-  call passes ``world`` so entities can read enemies, towers, and economy
-  without storing globals.
-* Entity list is a **persistent** ``list[Entity]``; dead enemies are culled
-  once after the update pass — no auto-respawn.  Phase 3's Wave Manager
-  will append enemies via ``world.enemies``.
-* ESC fix: Clickable dispatch runs first on every event.  ``running = False``
-  is only set when QUIT arrives or ESC is unhandled by all Clickables.
-* HUD rebuilds immediately when ``project_budget`` or ``client_patience``
-  change (tracked via snapshot), not just on the 0.5 s timer.
-* Kill bounty: ``world.flush_earnings()`` pays queued rewards after the
-  update pass and forces an immediate HUD refresh.
+Phase 3 changes
+---------------
+* Restored ``WINDOW_HEIGHT`` import for display initialization.
+* Integrated ``WaveManager`` to drive enemy spawning, lifecycle, and breathers.
+* Removed hardcoded demo enemy — ``World.enemies`` is populated by waves.
+* Integrated ``world.projectiles`` into update, render, and in-place culling passes.
+* In-place list slicing for enemy culling:
+  ``world.enemies[:] = [e for e in world.enemies if e.alive]``.
+* Removed redundant ``clickables`` rebuild after entity list refresh.
+* Contextual radial menu wired to ``World`` actions.
 """
 
 from __future__ import annotations
@@ -23,16 +19,16 @@ import sys
 import pygame
 
 from src.economy import Economy
-from src.enemy import Enemy
-from src.level import WAYPOINT_PIXELS
 from src.protocols import Clickable, Entity
 from src.render import build_static_layer
 from src.settings import (
     TARGET_FPS,
+    WINDOW_HEIGHT,
     WINDOW_TITLE,
     WINDOW_WIDTH,
 )
 from src.ui import RadialMenu
+from src.wave import WaveManager
 from src.world import World
 
 # ---------------------------------------------------------------------------
@@ -55,25 +51,26 @@ _PATIENCE_LOW_THRESHOLD: int = 25
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_enemy() -> Enemy:
-    """Construct a fresh ``Enemy`` positioned at the spawn waypoint."""
-    wx, wy = WAYPOINT_PIXELS[0]
-    return Enemy(pos=pygame.Vector2(wx, wy))
-
-
-def _build_entity_list(world: World, menu: RadialMenu) -> list[Entity]:
+def _build_entity_list(
+    world: World, menu: RadialMenu, wave_manager: WaveManager
+) -> list[Entity]:
     """Return entities sorted by layer from live world state.
 
-    Includes alive enemies, all placed towers, and the menu.  Dead
-    enemies are excluded — the Phase 3 Wave Manager will handle spawning.
+    Collects alive enemies, active projectiles, placed towers, the radial
+    menu, and the wave manager.
 
     Args:
         world: Shared game state.
         menu: The persistent radial-menu singleton.
+        wave_manager: The wave progression manager.
     """
-    alive: list[Entity] = [e for e in world.enemies if e.alive]
+    alive_enemies: list[Entity] = [e for e in world.enemies if e.alive]
+    alive_projectiles: list[Entity] = [p for p in world.projectiles if p.alive]
     towers: list[Entity] = list(world.towers.values())
-    return sorted(alive + towers + [menu], key=lambda e: e.layer)
+    return sorted(
+        alive_enemies + alive_projectiles + towers + [menu, wave_manager],
+        key=lambda e: e.layer,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -81,14 +78,14 @@ def _build_entity_list(world: World, menu: RadialMenu) -> list[Entity]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Run the Jobsite Defense Phase 2.5 game loop."""
+    """Run the Jobsite Defense Phase 3 game loop."""
     # ------------------------------------------------------------------
     # Initialisation
     # ------------------------------------------------------------------
     pygame.init()
 
     screen = pygame.display.set_mode(
-        (WINDOW_WIDTH, 720),
+        (WINDOW_WIDTH, WINDOW_HEIGHT),
         pygame.SCALED | pygame.DOUBLEBUF,
         vsync=1,
     )
@@ -100,18 +97,16 @@ def main() -> None:
 
     static_layer = build_static_layer(label_font)
 
-    # --- World -----------------------------------------------------------
-    world = World(
-        enemies=[_make_enemy()],   # one demo enemy for Phase 2.5
-        economy=Economy(),
-    )
+    # --- World & Systems -------------------------------------------------
+    world = World(economy=Economy())
+    wave_manager = WaveManager()
 
-    # --- Radial menu (Clickable UI, not in world.enemies) ----------------
+    # --- Radial menu (Clickable UI) --------------------------------------
     menu = RadialMenu()
-    menu.configure(world.economy, world.towers)
+    menu.configure(world)
 
     # --- Entity list (rebuilt after each mutation) -----------------------
-    entities: list[Entity] = _build_entity_list(world, menu)
+    entities: list[Entity] = _build_entity_list(world, menu, wave_manager)
 
     # --- HUD cache -------------------------------------------------------
     prev_budget = world.economy.project_budget
@@ -153,10 +148,8 @@ def main() -> None:
                 running = False
                 break
 
-            # Let every Clickable try to consume the event first.
             consumed = any(c.handle_event(event) for c in clickables)
 
-            # Only quit on ESC if no Clickable wanted it.
             if not consumed and event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
                 break
@@ -168,20 +161,21 @@ def main() -> None:
         for ent in entities:
             ent.update(dt, world)
 
-        # 4. Flush kill bounties & enemy lifecycle
+        # 4. Flush kill bounties & lifecycle culling
         earned = world.flush_earnings()
 
         patience_changed = False
-        for enemy in list(world.enemies):
-            if not enemy.alive:
-                if enemy.reached_end:
-                    world.economy.lose_patience()
-                    patience_changed = True
-                world.enemies.remove(enemy)
+        for enemy in world.enemies:
+            if not enemy.alive and enemy.reached_end:
+                world.economy.lose_patience()
+                patience_changed = True
 
-        # 5. Rebuild entity list (towers dict may have changed via menu)
-        entities = _build_entity_list(world, menu)
-        clickables = [e for e in reversed(entities) if isinstance(e, Clickable)]
+        # In-place slice cull for dead entities
+        world.enemies[:] = [e for e in world.enemies if e.alive]
+        world.projectiles[:] = [p for p in world.projectiles if p.alive]
+
+        # 5. Rebuild entity list (spawns, deaths, purchases)
+        entities = _build_entity_list(world, menu, wave_manager)
 
         # 6. HUD — throttled refresh + immediate on stat change
         hud_timer -= dt

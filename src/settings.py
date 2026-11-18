@@ -32,7 +32,7 @@ WINDOW_HEIGHT: int = CELL_SIZE * GRID_ROWS  # 720
 TARGET_FPS: int = 60
 """Frame-rate cap for the game loop."""
 
-WINDOW_TITLE: str = "Jobsite Defense — Phase 2"
+WINDOW_TITLE: str = "Jobsite Defense — Phase 3"
 """Caption shown in the window title bar."""
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,12 @@ COLOR_ENEMY: tuple[int, int, int] = (210, 50, 50)
 
 COLOR_ENEMY_OUTLINE: tuple[int, int, int] = (140, 30, 30)
 """Darker outline ring for the enemy circle."""
+
+COLOR_HOA: tuple[int, int, int] = (190, 70, 200)
+"""Purple circle for HOA Board Member swarm enemy."""
+
+COLOR_HOA_OUTLINE: tuple[int, int, int] = (120, 35, 130)
+"""Darker outline ring for the HOA Board Member."""
 
 COLOR_YETI_COOLER: tuple[int, int, int] = (100, 180, 255)
 """Blue tint for the Yeti Cooler attack-speed tile."""
@@ -91,6 +97,28 @@ NAIL_GUNNER_COOLDOWN: float = 0.8
 
 NAIL_GUNNER_DAMAGE: float = 25.0
 """Hit-scan damage per nail."""
+
+# ---------------------------------------------------------------------------
+# Tower — Concrete Pump base stats
+# ---------------------------------------------------------------------------
+
+CONCRETE_PUMP_COST: int = 750
+"""Purchase cost in project budget dollars."""
+
+CONCRETE_PUMP_RANGE: float = 150.0
+"""Base attack range in pixels (2.5 cells)."""
+
+CONCRETE_PUMP_COOLDOWN: float = 2.5
+"""Seconds between glob launches."""
+
+CONCRETE_PUMP_DAMAGE: float = 5.0
+"""Splash damage per glob detonation."""
+
+CONCRETE_GLOB_SPEED: float = 250.0
+"""Flight speed of the concrete glob in pixels per second."""
+
+CONCRETE_SPLASH_RADIUS: float = 1.5 * CELL_SIZE  # 90 px
+"""Detonation splash radius in pixels (1.5 grid cells)."""
 
 # ---------------------------------------------------------------------------
 # Power-up colour map

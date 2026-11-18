@@ -14,9 +14,12 @@ callers that need the concrete type import ``World`` directly from
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import pygame
+
+if TYPE_CHECKING:
+    from src.world import World
 
 
 @runtime_checkable
@@ -28,22 +31,22 @@ class Entity(Protocol):
                first.  Standard assignments:
 
                * 0  — background decorations (future)
+               * 5  — wave manager
                * 10 — enemies
                * 20 — towers
-               * 30 — projectiles (future)
+               * 30 — projectiles
                * 90 — UI overlays (radial menu, HUD widgets)
     """
 
     layer: int
 
-    def update(self, dt: float, world: Any) -> None:  # noqa: ANN401
+    def update(self, dt: float, world: World) -> None:
         """Advance the entity's state by *dt* seconds.
 
         Args:
             dt: Delta-time in seconds since the previous frame.
                 Always clamped to ≤ 0.05 s by the game loop.
-            world: Shared ``World`` context (typed ``Any`` to avoid
-                circular imports; use ``isinstance`` or cast as needed).
+            world: Shared ``World`` context.
         """
         ...
 
